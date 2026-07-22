@@ -3,8 +3,8 @@ import { readDB } from '../db.js';
 
 const router = Router();
 
-router.get('/api/payments', (req, res) => {
-  const db = readDB();
+router.get('/api/payments', async (req, res) => {
+  const db = await readDB();
   const allPayments = [];
   
   for (const invoice of db.invoices) {

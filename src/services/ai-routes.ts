@@ -4,9 +4,9 @@ import { generateBusinessAnalysis, generateEmailDraft, generateContractTerms } f
 
 const router = Router();
 
-router.post('/api/ai/analyze', (req, res) => {
+router.post('/api/ai/analyze', async (req, res) => {
   try {
-    const db = readDB();
+    const db = await readDB();
     const analysis = generateBusinessAnalysis(db);
     res.json({ success: true, analysis });
   } catch (error: any) {
@@ -15,10 +15,10 @@ router.post('/api/ai/analyze', (req, res) => {
   }
 });
 
-router.post('/api/ai/draft-email', (req, res) => {
+router.post('/api/ai/draft-email', async (req, res) => {
   try {
     const { type, number, clientName, amount, dueDate, notes } = req.body;
-    const db = readDB();
+    const db = await readDB();
     const email = generateEmailDraft({ type, number, clientName, amount, dueDate, notes, currency: db.settings.currency });
     res.json({ success: true, email });
   } catch (error: any) {

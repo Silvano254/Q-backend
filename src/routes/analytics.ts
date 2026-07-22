@@ -3,8 +3,8 @@ import { readDB } from '../db.js';
 
 const router = Router();
 
-router.get('/api/analytics/summary', (req, res) => {
-  const db = readDB();
+router.get('/api/analytics/summary', async (req, res) => {
+  const db = await readDB();
   const invoices = db.invoices;
   const quotes = db.quotes;
 

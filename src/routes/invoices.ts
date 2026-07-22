@@ -4,13 +4,13 @@ import { Invoice, PaymentRecord } from '../types.js';
 
 const router = Router();
 
-router.get('/api/invoices', (req, res) => {
-  const db = readDB();
+router.get('/api/invoices', async (req, res) => {
+  const db = await readDB();
   res.json(db.invoices);
 });
 
-router.post('/api/invoices', (req, res) => {
-  const db = readDB();
+router.post('/api/invoices', async (req, res) => {
+  const db = await readDB();
   const invoiceData = req.body;
 
   let iNum = invoiceData.invoiceNumber;
@@ -39,12 +39,12 @@ router.post('/api/invoices', (req, res) => {
   }
 
   updateClientStats(db);
-  writeDB(db);
+  await writeDB(db);
   res.status(201).json(newInvoice);
 });
 
-router.put('/api/invoices/:id', (req, res) => {
-  const db = readDB();
+router.put('/api/invoices/:id', async (req, res) => {
+  const db = await readDB();
   const index = db.invoices.findIndex(inv => inv.id === req.params.id);
   if (index !== -1) {
     const updatedInvoice = { ...db.invoices[index], ...req.body };
@@ -65,15 +65,15 @@ router.put('/api/invoices/:id', (req, res) => {
 
     db.invoices[index] = updatedInvoice;
     updateClientStats(db);
-    writeDB(db);
+    await writeDB(db);
     res.json(updatedInvoice);
   } else {
     res.status(404).json({ message: "Invoice not found" });
   }
 });
 
-router.post('/api/invoices/:id/payments', (req, res) => {
-  const db = readDB();
+router.post('/api/invoices/:id/payments', async (req, res) => {
+  const db = await readDB();
   const invoiceIndex = db.invoices.findIndex(inv => inv.id === req.params.id);
   
   if (invoiceIndex !== -1) {
@@ -103,18 +103,18 @@ router.post('/api/invoices/:id/payments', (req, res) => {
 
     db.invoices[invoiceIndex] = invoice;
     updateClientStats(db);
-    writeDB(db);
+    await writeDB(db);
     res.json(invoice);
   } else {
     res.status(404).json({ message: "Invoice not found" });
   }
 });
 
-router.delete('/api/invoices/:id', (req, res) => {
-  const db = readDB();
+router.delete('/api/invoices/:id', async (req, res) => {
+  const db = await readDB();
   db.invoices = db.invoices.filter(inv => inv.id !== req.params.id);
   updateClientStats(db);
-  writeDB(db);
+  await writeDB(db);
   res.json({ success: true });
 });
 

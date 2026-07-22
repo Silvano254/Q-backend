@@ -22,10 +22,40 @@ const allowedOrigins = corsOrigin
   : '*';
 
 app.use(cors({
-  origin: allowedOrigins,
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins === '*' || (Array.isArray(allowedOrigins) && allowedOrigins.includes('*'))) {
+      callback(null, true);
+    } else {
+      const isAllowed = Array.isArray(allowedOrigins) 
+        ? allowedOrigins.includes(origin) 
+        : allowedOrigins === origin;
+      if (isAllowed) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
+    }
+  },
   credentials: true
 }));
 app.use(express.json());
+
+// Incoming Request Logger Middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    console.log(`[HTTP] ${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}ms)`);
+    if (req.body && Object.keys(req.body).length > 0) {
+      const cleanBody = { ...req.body };
+      if (cleanBody.password) cleanBody.password = '***';
+      if (cleanBody.newPassword) cleanBody.newPassword = '***';
+      if (cleanBody.resendApiKey) cleanBody.resendApiKey = '***';
+      console.log(`  Payload: ${JSON.stringify(cleanBody)}`);
+    }
+  });
+  next();
+});
 
 // Routes
 app.use(authRoutes);

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { MongoClient } from 'mongodb';
 import { DBState, Client, ProductService, Quote, Invoice, CompanySettings } from './types.js';
 
 const DB_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
@@ -119,10 +120,75 @@ export const defaultProducts: ProductService[] = [
 ];
 
 export const defaultQuotes: Quote[] = [];
-
 export const defaultInvoices: Invoice[] = [];
 
-export function readDB(): DBState {
+// MongoDB setup
+const mongoUri = process.env.MONGODB_URI;
+let mongoClient: MongoClient | null = null;
+let dbName = 'binti-events';
+
+if (mongoUri) {
+  try {
+    mongoClient = new MongoClient(mongoUri);
+    const urlParts = mongoUri.split('/');
+    const lastPart = urlParts[urlParts.length - 1];
+    const cleanDbName = lastPart.split('?')[0];
+    if (cleanDbName) {
+      dbName = cleanDbName;
+    }
+    console.log(`MongoDB connection string found. Target database: "${dbName}"`);
+  } catch (err) {
+    console.error("Failed to parse MONGODB_URI. Falling back to local file database.", err);
+  }
+}
+
+let connectionPromise: Promise<any> | null = null;
+
+async function getMongoCollection() {
+  if (!mongoClient) return null;
+  if (!connectionPromise) {
+    connectionPromise = mongoClient.connect().then(() => {
+      console.log("Connected to MongoDB successfully.");
+    }).catch(err => {
+      console.error("MongoDB connection failed. Falling back to local file database.", err);
+      mongoClient = null;
+    });
+  }
+  await connectionPromise;
+  if (!mongoClient) return null;
+  return mongoClient.db(dbName).collection('app_state');
+}
+
+export async function readDB(): Promise<DBState> {
+  const collection = await getMongoCollection();
+  
+  if (collection) {
+    try {
+      const document = await collection.findOne({ _id: 'current_state' });
+      if (document) {
+        const { _id, ...state } = document;
+        return state as DBState;
+      } else {
+        const initialState: DBState = {
+          clients: defaultClients,
+          products: defaultProducts,
+          quotes: defaultQuotes,
+          invoices: defaultInvoices,
+          settings: defaultSettings
+        };
+        await collection.updateOne(
+          { _id: 'current_state' },
+          { $set: initialState },
+          { upsert: true }
+        );
+        return initialState;
+      }
+    } catch (err) {
+      console.error("Failed to read from MongoDB. Falling back to local JSON reading.", err);
+    }
+  }
+
+  // Fallback to local JSON file
   try {
     if (!fs.existsSync(DB_FILE)) {
       const initialState: DBState = {
@@ -149,7 +215,23 @@ export function readDB(): DBState {
   }
 }
 
-export function writeDB(state: DBState) {
+export async function writeDB(state: DBState): Promise<void> {
+  const collection = await getMongoCollection();
+  
+  if (collection) {
+    try {
+      await collection.updateOne(
+        { _id: 'current_state' },
+        { $set: state },
+        { upsert: true }
+      );
+      return;
+    } catch (err) {
+      console.error("Failed to write to MongoDB. Falling back to local JSON writing.", err);
+    }
+  }
+
+  // Fallback to local JSON file
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2));
   } catch (error) {

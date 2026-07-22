@@ -4,13 +4,13 @@ import { Quote } from '../types.js';
 
 const router = Router();
 
-router.get('/api/quotes', (req, res) => {
-  const db = readDB();
+router.get('/api/quotes', async (req, res) => {
+  const db = await readDB();
   res.json(db.quotes);
 });
 
-router.post('/api/quotes', (req, res) => {
-  const db = readDB();
+router.post('/api/quotes', async (req, res) => {
+  const db = await readDB();
   const quoteData = req.body;
   
   let qNum = quoteData.quoteNumber;
@@ -29,28 +29,28 @@ router.post('/api/quotes', (req, res) => {
 
   db.quotes.push(newQuote);
   updateClientStats(db);
-  writeDB(db);
+  await writeDB(db);
   res.status(201).json(newQuote);
 });
 
-router.put('/api/quotes/:id', (req, res) => {
-  const db = readDB();
+router.put('/api/quotes/:id', async (req, res) => {
+  const db = await readDB();
   const index = db.quotes.findIndex(q => q.id === req.params.id);
   if (index !== -1) {
     db.quotes[index] = { ...db.quotes[index], ...req.body };
     updateClientStats(db);
-    writeDB(db);
+    await writeDB(db);
     res.json(db.quotes[index]);
   } else {
     res.status(404).json({ message: "Quote not found" });
   }
 });
 
-router.delete('/api/quotes/:id', (req, res) => {
-  const db = readDB();
+router.delete('/api/quotes/:id', async (req, res) => {
+  const db = await readDB();
   db.quotes = db.quotes.filter(q => q.id !== req.params.id);
   updateClientStats(db);
-  writeDB(db);
+  await writeDB(db);
   res.json({ success: true });
 });
 

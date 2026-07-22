@@ -4,20 +4,20 @@ import { DBState } from '../types.js';
 
 const router = Router();
 
-router.get('/api/settings', (req, res) => {
-  const db = readDB();
+router.get('/api/settings', async (req, res) => {
+  const db = await readDB();
   res.json(db.settings);
 });
 
-router.put('/api/settings', (req, res) => {
-  const db = readDB();
+router.put('/api/settings', async (req, res) => {
+  const db = await readDB();
   db.settings = { ...db.settings, ...req.body };
-  writeDB(db);
+  await writeDB(db);
   res.json(db.settings);
 });
 
 // Database reset endpoint
-router.post('/api/settings/reset', (req, res) => {
+router.post('/api/settings/reset', async (req, res) => {
   const initialState: DBState = {
     clients: defaultClients,
     products: defaultProducts,
@@ -25,7 +25,7 @@ router.post('/api/settings/reset', (req, res) => {
     invoices: defaultInvoices,
     settings: defaultSettings
   };
-  writeDB(initialState);
+  await writeDB(initialState);
   res.json({ success: true, message: "Database reset successfully." });
 });
 
