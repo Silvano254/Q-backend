@@ -194,4 +194,93 @@ router.post('/api/auth/biometric-login', (req, res) => {
   });
 });
 
+// Request Profile Update OTP (Sent to original/current access email)
+router.post('/api/auth/request-profile-update-otp', (req, res) => {
+  const { currentEmail } = req.body;
+  const user = users[currentEmail?.toLowerCase()?.trim()];
+
+  if (!user) {
+    return res.status(404).json({ success: false, message: "User account not found." });
+  }
+
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  user.resetOtp = otp;
+  user.resetOtpExpiry = Date.now() + 15 * 60 * 1000; // 15 minutes validity
+
+  // Send verification OTP via email
+  sendEmail({
+    to: user.email,
+    subject: "Binti Events - Verification Code for Profile Changes",
+    text: `Hello ${user.name},\n\nYou requested to update your email or passcode on your Binti Events account.\nYour 6-digit verification code is: ${otp}\n\nIf you did not request this, please secure your account.`,
+    html: `
+      <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+        <h2>Security Verification Code</h2>
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>You requested to update your corporate email address or passcode on the Binti Events dashboard.</p>
+        <div style="background-color: #f3f4f6; border-radius: 8px; padding: 15px; margin: 20px 0; font-size: 24px; font-weight: bold; text-align: center; letter-spacing: 4px; color: #6B46C1;">
+          ${otp}
+        </div>
+        <p>Enter this verification PIN in your settings panel to authorize the changes.</p>
+        <p>If you did not initiate this, please secure your login immediately.</p>
+      </div>
+    `
+  }).catch(err => {
+    console.error("Error sending profile update OTP email:", err);
+  });
+
+  res.json({
+    success: true,
+    message: `Verification PIN sent to original email ${user.email}.`,
+    otp // returned for instant sandbox/local testing
+  });
+});
+
+// Verify and Apply Profile Updates (Email / Passcode)
+router.post('/api/auth/verify-profile-update', (req, res) => {
+  const { currentEmail, otp, newEmail, newPasscode } = req.body;
+  const userKey = currentEmail?.toLowerCase()?.trim();
+  const user = users[userKey];
+
+  if (!user) {
+    return res.status(404).json({ success: false, message: "Original account not found." });
+  }
+
+  if (!user.resetOtp || user.resetOtp !== otp) {
+    return res.status(400).json({ success: false, message: "Invalid or expired verification PIN." });
+  }
+
+  if (user.resetOtpExpiry && Date.now() > user.resetOtpExpiry) {
+    return res.status(400).json({ success: false, message: "Verification PIN has expired." });
+  }
+
+  // Clear OTP
+  user.resetOtp = undefined;
+  user.resetOtpExpiry = undefined;
+
+  // Apply Changes
+  if (newPasscode && newPasscode.length >= 4) {
+    user.passwordHash = newPasscode;
+  }
+
+  if (newEmail && newEmail.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
+    const freshEmail = newEmail.toLowerCase().trim();
+    user.email = freshEmail;
+    // Update record lookup key
+    users[freshEmail] = user;
+    delete users[userKey];
+  }
+
+  res.json({
+    success: true,
+    message: "Security profile updated successfully!",
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      biometricRegistered: user.biometricRegistered
+    }
+  });
+});
+
 export default router;

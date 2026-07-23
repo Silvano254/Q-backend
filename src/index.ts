@@ -12,8 +12,17 @@ import analyticsRoutes from './routes/analytics.js';
 import settingsRoutes from './routes/settings.js';
 import emailRoutes from './routes/email.js';
 import aiRoutes from './services/ai-routes.js';
+import {
+  authLimiter,
+  otpLimiter,
+  aiLimiter,
+  emailLimiter,
+  resetLimiter,
+  globalLimiter
+} from './middleware/limiter.js';
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 const corsOrigin = process.env.CORS_ORIGIN;
@@ -56,6 +65,18 @@ app.use((req, res, next) => {
   });
   next();
 });
+
+// Global API Limiter
+app.use('/api', globalLimiter);
+
+// Specific Route Limiters
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/biometric-login', authLimiter);
+app.use('/api/auth/request-reset', otpLimiter);
+app.use('/api/auth/request-profile-update-otp', otpLimiter);
+app.use('/api/ai', aiLimiter);
+app.use('/api/email', emailLimiter);
+app.use('/api/settings/reset', resetLimiter);
 
 // Routes
 app.use(authRoutes);

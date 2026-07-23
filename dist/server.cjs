@@ -24,11 +24,60 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // src/index.ts
 var import_config = require("dotenv/config");
-var import_express10 = __toESM(require("express"), 1);
+var import_express11 = __toESM(require("express"), 1);
 var import_cors = __toESM(require("cors"), 1);
 
 // src/routes/auth.ts
 var import_express = require("express");
+
+// src/services/email.ts
+var import_resend = require("resend");
+var apiKey = process.env.RESEND_API_KEY || "";
+var fromEmail = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
+var resend = null;
+if (apiKey && apiKey !== "re_123456789") {
+  resend = new import_resend.Resend(apiKey);
+}
+async function sendEmail({ to, subject, text, html }) {
+  console.log(`Sending email to ${to} with subject "${subject}"...`);
+  if (!resend) {
+    console.warn(`Resend email service not configured (missing or default RESEND_API_KEY).`);
+    console.log(`[SIMULATED EMAIL]
+To: ${to}
+From: ${fromEmail}
+Subject: ${subject}
+Content:
+${text || html}
+[END SIMULATED EMAIL]`);
+    return {
+      success: true,
+      simulated: true,
+      message: "Email sending simulated successfully."
+    };
+  }
+  try {
+    const response = await resend.emails.send({
+      from: fromEmail,
+      to,
+      subject,
+      text,
+      html
+    });
+    if (response.error) {
+      console.error("Resend API error:", response.error);
+      throw new Error(response.error.message || "Failed to send email via Resend.");
+    }
+    return {
+      success: true,
+      data: response.data
+    };
+  } catch (error) {
+    console.error("Failed to send email via Resend:", error);
+    throw new Error(error.message || "Unknown email delivery error.");
+  }
+}
+
+// src/routes/auth.ts
 var router = (0, import_express.Router)();
 var users = {
   "admin@bintievents.com": {
@@ -81,6 +130,34 @@ router.post("/api/auth/request-reset", (req, res) => {
   const otp = Math.floor(1e5 + Math.random() * 9e5).toString();
   user.resetOtp = otp;
   user.resetOtpExpiry = Date.now() + 15 * 60 * 1e3;
+  sendEmail({
+    to: user.email,
+    subject: "Binti Events - Password Recovery OTP",
+    text: `Hello ${user.name},
+
+You requested a passcode reset for your Binti Events account.
+Your 6-digit security recovery PIN is: ${otp}
+
+This PIN is valid for 15 minutes.
+
+If you did not request this, please ignore this email.`,
+    html: `
+      <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+        <h2>Password Recovery</h2>
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>You requested a passcode reset for your Binti Events corporate account.</p>
+        <div style="background-color: #f3f4f6; border-radius: 8px; padding: 15px; margin: 20px 0; font-size: 24px; font-weight: bold; text-align: center; letter-spacing: 4px; color: #6B46C1;">
+          ${otp}
+        </div>
+        <p>This security recovery PIN is valid for <strong>15 minutes</strong>.</p>
+        <p>If you did not request this reset, please ignore this email or contact system administration.</p>
+        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
+        <p style="font-size: 11px; color: #666;">Binti Events Management Portal</p>
+      </div>
+    `
+  }).catch((err) => {
+    console.error("Error sending OTP email:", err);
+  });
   res.json({
     success: true,
     message: `Security recovery PIN generated for ${user.email}.`,
@@ -155,6 +232,82 @@ router.post("/api/auth/biometric-login", (req, res) => {
     token: "binti-bio-jwt-" + user.id
   });
 });
+router.post("/api/auth/request-profile-update-otp", (req, res) => {
+  const { currentEmail } = req.body;
+  const user = users[currentEmail?.toLowerCase()?.trim()];
+  if (!user) {
+    return res.status(404).json({ success: false, message: "User account not found." });
+  }
+  const otp = Math.floor(1e5 + Math.random() * 9e5).toString();
+  user.resetOtp = otp;
+  user.resetOtpExpiry = Date.now() + 15 * 60 * 1e3;
+  sendEmail({
+    to: user.email,
+    subject: "Binti Events - Verification Code for Profile Changes",
+    text: `Hello ${user.name},
+
+You requested to update your email or passcode on your Binti Events account.
+Your 6-digit verification code is: ${otp}
+
+If you did not request this, please secure your account.`,
+    html: `
+      <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+        <h2>Security Verification Code</h2>
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>You requested to update your corporate email address or passcode on the Binti Events dashboard.</p>
+        <div style="background-color: #f3f4f6; border-radius: 8px; padding: 15px; margin: 20px 0; font-size: 24px; font-weight: bold; text-align: center; letter-spacing: 4px; color: #6B46C1;">
+          ${otp}
+        </div>
+        <p>Enter this verification PIN in your settings panel to authorize the changes.</p>
+        <p>If you did not initiate this, please secure your login immediately.</p>
+      </div>
+    `
+  }).catch((err) => {
+    console.error("Error sending profile update OTP email:", err);
+  });
+  res.json({
+    success: true,
+    message: `Verification PIN sent to original email ${user.email}.`,
+    otp
+    // returned for instant sandbox/local testing
+  });
+});
+router.post("/api/auth/verify-profile-update", (req, res) => {
+  const { currentEmail, otp, newEmail, newPasscode } = req.body;
+  const userKey = currentEmail?.toLowerCase()?.trim();
+  const user = users[userKey];
+  if (!user) {
+    return res.status(404).json({ success: false, message: "Original account not found." });
+  }
+  if (!user.resetOtp || user.resetOtp !== otp) {
+    return res.status(400).json({ success: false, message: "Invalid or expired verification PIN." });
+  }
+  if (user.resetOtpExpiry && Date.now() > user.resetOtpExpiry) {
+    return res.status(400).json({ success: false, message: "Verification PIN has expired." });
+  }
+  user.resetOtp = void 0;
+  user.resetOtpExpiry = void 0;
+  if (newPasscode && newPasscode.length >= 4) {
+    user.passwordHash = newPasscode;
+  }
+  if (newEmail && newEmail.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
+    const freshEmail = newEmail.toLowerCase().trim();
+    user.email = freshEmail;
+    users[freshEmail] = user;
+    delete users[userKey];
+  }
+  res.json({
+    success: true,
+    message: "Security profile updated successfully!",
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      biometricRegistered: user.biometricRegistered
+    }
+  });
+});
 var auth_default = router;
 
 // src/routes/clients.ts
@@ -163,6 +316,7 @@ var import_express2 = require("express");
 // src/db.ts
 var import_fs = __toESM(require("fs"), 1);
 var import_path = __toESM(require("path"), 1);
+var import_mongodb = require("mongodb");
 var DB_DIR = process.env.DATA_DIR || import_path.default.join(process.cwd(), "data");
 var DB_FILE = import_path.default.join(DB_DIR, "server-db.json");
 if (!import_fs.default.existsSync(DB_DIR)) {
@@ -275,7 +429,65 @@ var defaultProducts = [
 ];
 var defaultQuotes = [];
 var defaultInvoices = [];
-function readDB() {
+var mongoUri = process.env.MONGODB_URI;
+var mongoClient = null;
+var dbName = "binti-events";
+if (mongoUri) {
+  try {
+    mongoClient = new import_mongodb.MongoClient(mongoUri);
+    const urlParts = mongoUri.split("/");
+    const lastPart = urlParts[urlParts.length - 1];
+    const cleanDbName = lastPart.split("?")[0];
+    if (cleanDbName) {
+      dbName = cleanDbName;
+    }
+    console.log(`MongoDB connection string found. Target database: "${dbName}"`);
+  } catch (err) {
+    console.error("Failed to parse MONGODB_URI. Falling back to local file database.", err);
+  }
+}
+var connectionPromise = null;
+async function getMongoCollection() {
+  if (!mongoClient) return null;
+  if (!connectionPromise) {
+    connectionPromise = mongoClient.connect().then(() => {
+      console.log("Connected to MongoDB successfully.");
+    }).catch((err) => {
+      console.error("MongoDB connection failed. Falling back to local file database.", err);
+      mongoClient = null;
+    });
+  }
+  await connectionPromise;
+  if (!mongoClient) return null;
+  return mongoClient.db(dbName).collection("app_state");
+}
+async function readDB() {
+  const collection = await getMongoCollection();
+  if (collection) {
+    try {
+      const document = await collection.findOne({ _id: "current_state" });
+      if (document) {
+        const { _id, ...state } = document;
+        return state;
+      } else {
+        const initialState = {
+          clients: defaultClients,
+          products: defaultProducts,
+          quotes: defaultQuotes,
+          invoices: defaultInvoices,
+          settings: defaultSettings
+        };
+        await collection.updateOne(
+          { _id: "current_state" },
+          { $set: initialState },
+          { upsert: true }
+        );
+        return initialState;
+      }
+    } catch (err) {
+      console.error("Failed to read from MongoDB. Falling back to local JSON reading.", err);
+    }
+  }
   try {
     if (!import_fs.default.existsSync(DB_FILE)) {
       const initialState = {
@@ -301,7 +513,20 @@ function readDB() {
     };
   }
 }
-function writeDB(state) {
+async function writeDB(state) {
+  const collection = await getMongoCollection();
+  if (collection) {
+    try {
+      await collection.updateOne(
+        { _id: "current_state" },
+        { $set: state },
+        { upsert: true }
+      );
+      return;
+    } catch (err) {
+      console.error("Failed to write to MongoDB. Falling back to local JSON writing.", err);
+    }
+  }
   try {
     import_fs.default.writeFileSync(DB_FILE, JSON.stringify(state, null, 2));
   } catch (error) {
@@ -328,12 +553,12 @@ function updateClientStats(state) {
 
 // src/routes/clients.ts
 var router2 = (0, import_express2.Router)();
-router2.get("/api/clients", (req, res) => {
-  const db = readDB();
+router2.get("/api/clients", async (req, res) => {
+  const db = await readDB();
   res.json(db.clients);
 });
-router2.post("/api/clients", (req, res) => {
-  const db = readDB();
+router2.post("/api/clients", async (req, res) => {
+  const db = await readDB();
   const newClient = {
     ...req.body,
     id: "c_" + Date.now().toString(),
@@ -343,24 +568,24 @@ router2.post("/api/clients", (req, res) => {
     lastActivity: (/* @__PURE__ */ new Date()).toISOString().split("T")[0]
   };
   db.clients.push(newClient);
-  writeDB(db);
+  await writeDB(db);
   res.status(201).json(newClient);
 });
-router2.put("/api/clients/:id", (req, res) => {
-  const db = readDB();
+router2.put("/api/clients/:id", async (req, res) => {
+  const db = await readDB();
   const index = db.clients.findIndex((c) => c.id === req.params.id);
   if (index !== -1) {
     db.clients[index] = { ...db.clients[index], ...req.body };
-    writeDB(db);
+    await writeDB(db);
     res.json(db.clients[index]);
   } else {
     res.status(404).json({ message: "Client not found" });
   }
 });
-router2.delete("/api/clients/:id", (req, res) => {
-  const db = readDB();
+router2.delete("/api/clients/:id", async (req, res) => {
+  const db = await readDB();
   db.clients = db.clients.filter((c) => c.id !== req.params.id);
-  writeDB(db);
+  await writeDB(db);
   res.json({ success: true });
 });
 var clients_default = router2;
@@ -368,35 +593,35 @@ var clients_default = router2;
 // src/routes/products.ts
 var import_express3 = require("express");
 var router3 = (0, import_express3.Router)();
-router3.get("/api/products", (req, res) => {
-  const db = readDB();
+router3.get("/api/products", async (req, res) => {
+  const db = await readDB();
   res.json(db.products);
 });
-router3.post("/api/products", (req, res) => {
-  const db = readDB();
+router3.post("/api/products", async (req, res) => {
+  const db = await readDB();
   const newProduct = {
     ...req.body,
     id: "p_" + Date.now().toString()
   };
   db.products.push(newProduct);
-  writeDB(db);
+  await writeDB(db);
   res.status(201).json(newProduct);
 });
-router3.put("/api/products/:id", (req, res) => {
-  const db = readDB();
+router3.put("/api/products/:id", async (req, res) => {
+  const db = await readDB();
   const index = db.products.findIndex((p) => p.id === req.params.id);
   if (index !== -1) {
     db.products[index] = { ...db.products[index], ...req.body };
-    writeDB(db);
+    await writeDB(db);
     res.json(db.products[index]);
   } else {
     res.status(404).json({ message: "Product/service not found" });
   }
 });
-router3.delete("/api/products/:id", (req, res) => {
-  const db = readDB();
+router3.delete("/api/products/:id", async (req, res) => {
+  const db = await readDB();
   db.products = db.products.filter((p) => p.id !== req.params.id);
-  writeDB(db);
+  await writeDB(db);
   res.json({ success: true });
 });
 var products_default = router3;
@@ -404,12 +629,12 @@ var products_default = router3;
 // src/routes/quotes.ts
 var import_express4 = require("express");
 var router4 = (0, import_express4.Router)();
-router4.get("/api/quotes", (req, res) => {
-  const db = readDB();
+router4.get("/api/quotes", async (req, res) => {
+  const db = await readDB();
   res.json(db.quotes);
 });
-router4.post("/api/quotes", (req, res) => {
-  const db = readDB();
+router4.post("/api/quotes", async (req, res) => {
+  const db = await readDB();
   const quoteData = req.body;
   let qNum = quoteData.quoteNumber;
   if (!qNum) {
@@ -425,26 +650,26 @@ router4.post("/api/quotes", (req, res) => {
   };
   db.quotes.push(newQuote);
   updateClientStats(db);
-  writeDB(db);
+  await writeDB(db);
   res.status(201).json(newQuote);
 });
-router4.put("/api/quotes/:id", (req, res) => {
-  const db = readDB();
+router4.put("/api/quotes/:id", async (req, res) => {
+  const db = await readDB();
   const index = db.quotes.findIndex((q) => q.id === req.params.id);
   if (index !== -1) {
     db.quotes[index] = { ...db.quotes[index], ...req.body };
     updateClientStats(db);
-    writeDB(db);
+    await writeDB(db);
     res.json(db.quotes[index]);
   } else {
     res.status(404).json({ message: "Quote not found" });
   }
 });
-router4.delete("/api/quotes/:id", (req, res) => {
-  const db = readDB();
+router4.delete("/api/quotes/:id", async (req, res) => {
+  const db = await readDB();
   db.quotes = db.quotes.filter((q) => q.id !== req.params.id);
   updateClientStats(db);
-  writeDB(db);
+  await writeDB(db);
   res.json({ success: true });
 });
 var quotes_default = router4;
@@ -452,12 +677,12 @@ var quotes_default = router4;
 // src/routes/invoices.ts
 var import_express5 = require("express");
 var router5 = (0, import_express5.Router)();
-router5.get("/api/invoices", (req, res) => {
-  const db = readDB();
+router5.get("/api/invoices", async (req, res) => {
+  const db = await readDB();
   res.json(db.invoices);
 });
-router5.post("/api/invoices", (req, res) => {
-  const db = readDB();
+router5.post("/api/invoices", async (req, res) => {
+  const db = await readDB();
   const invoiceData = req.body;
   let iNum = invoiceData.invoiceNumber;
   if (!iNum) {
@@ -481,11 +706,11 @@ router5.post("/api/invoices", (req, res) => {
     }
   }
   updateClientStats(db);
-  writeDB(db);
+  await writeDB(db);
   res.status(201).json(newInvoice);
 });
-router5.put("/api/invoices/:id", (req, res) => {
-  const db = readDB();
+router5.put("/api/invoices/:id", async (req, res) => {
+  const db = await readDB();
   const index = db.invoices.findIndex((inv) => inv.id === req.params.id);
   if (index !== -1) {
     const updatedInvoice = { ...db.invoices[index], ...req.body };
@@ -503,14 +728,14 @@ router5.put("/api/invoices/:id", (req, res) => {
     }
     db.invoices[index] = updatedInvoice;
     updateClientStats(db);
-    writeDB(db);
+    await writeDB(db);
     res.json(updatedInvoice);
   } else {
     res.status(404).json({ message: "Invoice not found" });
   }
 });
-router5.post("/api/invoices/:id/payments", (req, res) => {
-  const db = readDB();
+router5.post("/api/invoices/:id/payments", async (req, res) => {
+  const db = await readDB();
   const invoiceIndex = db.invoices.findIndex((inv) => inv.id === req.params.id);
   if (invoiceIndex !== -1) {
     const invoice = db.invoices[invoiceIndex];
@@ -534,17 +759,17 @@ router5.post("/api/invoices/:id/payments", (req, res) => {
     }
     db.invoices[invoiceIndex] = invoice;
     updateClientStats(db);
-    writeDB(db);
+    await writeDB(db);
     res.json(invoice);
   } else {
     res.status(404).json({ message: "Invoice not found" });
   }
 });
-router5.delete("/api/invoices/:id", (req, res) => {
-  const db = readDB();
+router5.delete("/api/invoices/:id", async (req, res) => {
+  const db = await readDB();
   db.invoices = db.invoices.filter((inv) => inv.id !== req.params.id);
   updateClientStats(db);
-  writeDB(db);
+  await writeDB(db);
   res.json({ success: true });
 });
 var invoices_default = router5;
@@ -552,8 +777,8 @@ var invoices_default = router5;
 // src/routes/payments.ts
 var import_express6 = require("express");
 var router6 = (0, import_express6.Router)();
-router6.get("/api/payments", (req, res) => {
-  const db = readDB();
+router6.get("/api/payments", async (req, res) => {
+  const db = await readDB();
   const allPayments = [];
   for (const invoice of db.invoices) {
     if (invoice.payments && invoice.payments.length > 0) {
@@ -581,8 +806,8 @@ var payments_default = router6;
 // src/routes/analytics.ts
 var import_express7 = require("express");
 var router7 = (0, import_express7.Router)();
-router7.get("/api/analytics/summary", (req, res) => {
-  const db = readDB();
+router7.get("/api/analytics/summary", async (req, res) => {
+  const db = await readDB();
   const invoices = db.invoices;
   const quotes = db.quotes;
   const totalInvoicesValue = invoices.reduce((sum, inv) => sum + inv.grandTotal, 0);
@@ -613,17 +838,17 @@ var analytics_default = router7;
 // src/routes/settings.ts
 var import_express8 = require("express");
 var router8 = (0, import_express8.Router)();
-router8.get("/api/settings", (req, res) => {
-  const db = readDB();
+router8.get("/api/settings", async (req, res) => {
+  const db = await readDB();
   res.json(db.settings);
 });
-router8.put("/api/settings", (req, res) => {
-  const db = readDB();
+router8.put("/api/settings", async (req, res) => {
+  const db = await readDB();
   db.settings = { ...db.settings, ...req.body };
-  writeDB(db);
+  await writeDB(db);
   res.json(db.settings);
 });
-router8.post("/api/settings/reset", (req, res) => {
+router8.post("/api/settings/reset", async (req, res) => {
   const initialState = {
     clients: defaultClients,
     products: defaultProducts,
@@ -631,13 +856,36 @@ router8.post("/api/settings/reset", (req, res) => {
     invoices: defaultInvoices,
     settings: defaultSettings
   };
-  writeDB(initialState);
+  await writeDB(initialState);
   res.json({ success: true, message: "Database reset successfully." });
 });
 var settings_default = router8;
 
-// src/services/ai-routes.ts
+// src/routes/email.ts
 var import_express9 = require("express");
+var router9 = (0, import_express9.Router)();
+router9.post("/api/email/send", async (req, res) => {
+  const { to, subject, body } = req.body;
+  if (!to || !subject || !body) {
+    return res.status(400).json({ success: false, message: "Missing required fields: to, subject, body." });
+  }
+  try {
+    const result = await sendEmail({
+      to,
+      subject,
+      html: body.includes("<") && body.includes(">") ? body : void 0,
+      text: !(body.includes("<") && body.includes(">")) ? body : void 0
+    });
+    res.json(result);
+  } catch (error) {
+    console.error("Error sending custom email:", error);
+    res.status(500).json({ success: false, message: error.message || "Failed to send email." });
+  }
+});
+var email_default = router9;
+
+// src/services/ai-routes.ts
+var import_express10 = require("express");
 
 // src/services/ai.ts
 function generateBusinessAnalysis(db) {
@@ -852,10 +1100,10 @@ function generateContractTerms(params) {
 }
 
 // src/services/ai-routes.ts
-var router9 = (0, import_express9.Router)();
-router9.post("/api/ai/analyze", (req, res) => {
+var router10 = (0, import_express10.Router)();
+router10.post("/api/ai/analyze", async (req, res) => {
   try {
-    const db = readDB();
+    const db = await readDB();
     const analysis = generateBusinessAnalysis(db);
     res.json({ success: true, analysis });
   } catch (error) {
@@ -863,10 +1111,10 @@ router9.post("/api/ai/analyze", (req, res) => {
     res.status(500).json({ success: false, message: "Failed to generate analysis. " + (error.message || "") });
   }
 });
-router9.post("/api/ai/draft-email", (req, res) => {
+router10.post("/api/ai/draft-email", async (req, res) => {
   try {
     const { type, number, clientName, amount, dueDate, notes } = req.body;
-    const db = readDB();
+    const db = await readDB();
     const email = generateEmailDraft({ type, number, clientName, amount, dueDate, notes, currency: db.settings.currency });
     res.json({ success: true, email });
   } catch (error) {
@@ -874,7 +1122,7 @@ router9.post("/api/ai/draft-email", (req, res) => {
     res.status(500).json({ success: false, message: "Failed to draft email. " + (error.message || "") });
   }
 });
-router9.post("/api/ai/recommend-terms", (req, res) => {
+router10.post("/api/ai/recommend-terms", (req, res) => {
   try {
     const { clientName, items } = req.body;
     const terms = generateContractTerms({ clientName, items });
@@ -884,18 +1132,102 @@ router9.post("/api/ai/recommend-terms", (req, res) => {
     res.status(500).json({ success: false, message: "Failed to recommend terms. " + (error.message || "") });
   }
 });
-var ai_routes_default = router9;
+var ai_routes_default = router10;
+
+// src/middleware/limiter.ts
+var import_express_rate_limit = require("express-rate-limit");
+var rateLimitMessage = (msg) => ({
+  success: false,
+  message: `${msg}. Please try again later.`
+});
+var authLimiter = (0, import_express_rate_limit.rateLimit)({
+  windowMs: 15 * 60 * 1e3,
+  max: 5,
+  message: rateLimitMessage("Too many login attempts from this IP"),
+  standardHeaders: true,
+  legacyHeaders: false
+});
+var otpLimiter = (0, import_express_rate_limit.rateLimit)({
+  windowMs: 15 * 60 * 1e3,
+  max: 3,
+  message: rateLimitMessage("Too many verification PIN requests from this IP"),
+  standardHeaders: true,
+  legacyHeaders: false
+});
+var aiLimiter = (0, import_express_rate_limit.rateLimit)({
+  windowMs: 60 * 60 * 1e3,
+  max: 10,
+  message: rateLimitMessage("AI recommendation quota exceeded for this hour"),
+  standardHeaders: true,
+  legacyHeaders: false
+});
+var emailLimiter = (0, import_express_rate_limit.rateLimit)({
+  windowMs: 60 * 60 * 1e3,
+  max: 5,
+  message: rateLimitMessage("Email sending limit reached for this hour"),
+  standardHeaders: true,
+  legacyHeaders: false
+});
+var resetLimiter = (0, import_express_rate_limit.rateLimit)({
+  windowMs: 60 * 60 * 1e3,
+  max: 3,
+  message: rateLimitMessage("Too many database reset requests"),
+  standardHeaders: true,
+  legacyHeaders: false
+});
+var globalLimiter = (0, import_express_rate_limit.rateLimit)({
+  windowMs: 15 * 60 * 1e3,
+  max: 100,
+  message: rateLimitMessage("Too many requests from this IP"),
+  standardHeaders: true,
+  legacyHeaders: false
+});
 
 // src/index.ts
-var app = (0, import_express10.default)();
+var app = (0, import_express11.default)();
+app.set("trust proxy", 1);
 var PORT = process.env.PORT || 3e3;
 var corsOrigin = process.env.CORS_ORIGIN;
 var allowedOrigins = corsOrigin ? corsOrigin.includes(",") ? corsOrigin.split(",").map((s) => s.trim()) : corsOrigin : "*";
 app.use((0, import_cors.default)({
-  origin: allowedOrigins,
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins === "*" || Array.isArray(allowedOrigins) && allowedOrigins.includes("*")) {
+      callback(null, true);
+    } else {
+      const isAllowed = Array.isArray(allowedOrigins) ? allowedOrigins.includes(origin) : allowedOrigins === origin;
+      if (isAllowed) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
+    }
+  },
   credentials: true
 }));
-app.use(import_express10.default.json());
+app.use(import_express11.default.json());
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    console.log(`[HTTP] ${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}ms)`);
+    if (req.body && Object.keys(req.body).length > 0) {
+      const cleanBody = { ...req.body };
+      if (cleanBody.password) cleanBody.password = "***";
+      if (cleanBody.newPassword) cleanBody.newPassword = "***";
+      if (cleanBody.resendApiKey) cleanBody.resendApiKey = "***";
+      console.log(`  Payload: ${JSON.stringify(cleanBody)}`);
+    }
+  });
+  next();
+});
+app.use("/api", globalLimiter);
+app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/biometric-login", authLimiter);
+app.use("/api/auth/request-reset", otpLimiter);
+app.use("/api/auth/request-profile-update-otp", otpLimiter);
+app.use("/api/ai", aiLimiter);
+app.use("/api/email", emailLimiter);
+app.use("/api/settings/reset", resetLimiter);
 app.use(auth_default);
 app.use(clients_default);
 app.use(products_default);
@@ -904,6 +1236,7 @@ app.use(invoices_default);
 app.use(payments_default);
 app.use(analytics_default);
 app.use(settings_default);
+app.use(email_default);
 app.use(ai_routes_default);
 var healthHandler = (req, res) => {
   res.json({ status: "ok", service: "binti-events-backend", timestamp: (/* @__PURE__ */ new Date()).toISOString() });
