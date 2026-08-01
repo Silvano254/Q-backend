@@ -20,13 +20,30 @@ router.post('/api/invoices', async (req, res) => {
     iNum = db.settings.invoiceFormat.replace("{YYYY}", year.toString()).replace("{SEQ}", sequence);
   }
 
+  const paidSum = (invoiceData.payments || []).reduce((sum: number, p: PaymentRecord) => sum + (Number(p.amountPaid) || 0), 0);
+  const grandTotal = Number(invoiceData.grandTotal) || 0;
+  const balanceRemaining = Math.max(0, grandTotal - paidSum);
+
+  let initialStatus = invoiceData.status || "draft";
+  if (initialStatus !== "cancelled" && initialStatus !== "draft") {
+    if (balanceRemaining === 0) {
+      initialStatus = "paid";
+    } else if (paidSum > 0) {
+      initialStatus = "partially_paid";
+    }
+  }
+
   const newInvoice: Invoice = {
     ...invoiceData,
     id: "i_" + Date.now().toString(),
     invoiceNumber: iNum,
-    status: invoiceData.status || "draft",
+    subtotal: Number(invoiceData.subtotal) || 0,
+    discountTotal: Number(invoiceData.discountTotal) || 0,
+    taxTotal: Number(invoiceData.taxTotal) || 0,
+    grandTotal: grandTotal,
+    status: initialStatus,
     payments: invoiceData.payments || [],
-    balanceRemaining: invoiceData.grandTotal - (invoiceData.payments || []).reduce((sum: number, p: PaymentRecord) => sum + p.amountPaid, 0)
+    balanceRemaining: balanceRemaining
   };
 
   db.invoices.push(newInvoice);

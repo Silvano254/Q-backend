@@ -1,47 +1,136 @@
 import { Router } from 'express';
+import crypto from 'crypto';
+import rateLimit from 'express-rate-limit';
 import { sendEmail } from '../services/email.js';
 
 const router = Router();
 
-// In-memory user store for demo and live sessions
+const JWT_SECRET = process.env.JWT_SECRET || 'binti_events_secure_signing_key_2026';
+
+function hashPassword(password: string, salt: string = crypto.randomBytes(16).toString('hex')): { hash: string; salt: string } {
+  const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+  return { hash, salt };
+}
+
+function verifyPassword(password: string, salt: string, storedHash: string): boolean {
+  const { hash } = hashPassword(password, salt);
+  const hashBuffer = Buffer.from(hash, 'hex');
+  const storedBuffer = Buffer.from(storedHash, 'hex');
+  if (hashBuffer.length !== storedBuffer.length) return false;
+  return crypto.timingSafeEqual(hashBuffer, storedBuffer);
+}
+
+function generateSignedToken(payload: { id: string; email: string; role: string }): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 24 * 60 * 60 * 1000 })).toString('base64url');
+  const signature = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
+  return `${header}.${body}.${signature}`;
+}
+
+export function verifySignedToken(token: string): { id: string; email: string; role: string } | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const [header, body, signature] = parts;
+    const expectedSignature = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) return null;
+    const parsedBody = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    if (parsedBody.exp && Date.now() > parsedBody.exp) return null;
+    return parsedBody;
+  } catch {
+    return null;
+  }
+}
+
+// In-memory user store
 interface UserAccount {
   id: string;
   email: string;
   name: string;
   role: 'admin' | 'manager';
   passwordHash: string;
+  passwordSalt: string;
   resetOtp?: string;
   resetOtpExpiry?: number;
   biometricRegistered: boolean;
   biometricCredentialId?: string;
 }
 
+const adminPass = hashPassword("binti2026");
+const managerPass = hashPassword("manager2026");
+
+const defaultAdminEmail = process.env.ADMIN_EMAIL || "silvanootieno44@gmail.com";
+
 const users: Record<string, UserAccount> = {
-  "admin@bintievents.com": {
+  [defaultAdminEmail.toLowerCase()]: {
     id: "admin",
-    email: "admin@bintievents.com",
+    email: defaultAdminEmail,
     name: "Admin Binti",
     role: "admin",
-    passwordHash: "binti2026",
+    passwordHash: adminPass.hash,
+    passwordSalt: adminPass.salt,
     biometricRegistered: true,
     biometricCredentialId: "bio_credential_admin_binti"
   },
-  "manager@bintievents.com": {
-    id: "manager",
-    email: "manager@bintievents.com",
-    name: "Events Manager",
-    role: "manager",
-    passwordHash: "manager2026",
-    biometricRegistered: false
+  "silvanootieno44@gmail.com": {
+    id: "admin",
+    email: defaultAdminEmail,
+    name: "Admin Binti",
+    role: "admin",
+    passwordHash: adminPass.hash,
+    passwordSalt: adminPass.salt,
+    biometricRegistered: true
   }
 };
 
-// Standard Password Login
-router.post('/api/auth/login', (req, res) => {
-  const { email, password } = req.body;
-  const user = users[email?.toLowerCase()?.trim()];
+export function findUser(emailOrId?: string): UserAccount | undefined {
+  if (!emailOrId) return undefined;
+  const key = emailOrId.toLowerCase().trim();
+  if (users[key]) return users[key];
+  return Object.values(users).find(u => 
+    u.email.toLowerCase() === key || 
+    u.id.toLowerCase() === key || 
+    (u.role === 'admin' && (key === 'admin' || key === 'silvanootieno44@gmail.com' || key === 'billing@bintievents.co.ke' || key === 'admin@bintievents.co.ke'))
+  );
+}
 
-  if (user && user.passwordHash === password) {
+// Rate limiter for authentication routes
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  message: { success: false, message: "Too many authentication requests from this IP address. Please try again in 15 minutes." },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// Verify Session Token Endpoint
+router.post('/api/auth/verify', (req, res) => {
+  const { token } = req.body;
+  if (!token) return res.status(400).json({ success: false, message: "No token provided." });
+  const decoded = verifySignedToken(token);
+  if (!decoded) return res.status(401).json({ success: false, message: "Invalid or expired session token." });
+  const user = Object.values(users).find(u => u.id === decoded.id);
+  if (!user) return res.status(404).json({ success: false, message: "User account no longer exists." });
+
+  res.json({
+    success: true,
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      biometricRegistered: user.biometricRegistered
+    }
+  });
+});
+
+// Standard Password Login
+router.post('/api/auth/login', authLimiter, (req, res) => {
+  const { email, password } = req.body;
+  const user = findUser(email);
+
+  if (user && verifyPassword(password || "", user.passwordSalt, user.passwordHash)) {
+    const token = generateSignedToken({ id: user.id, email: user.email, role: user.role });
     res.json({
       success: true,
       user: {
@@ -51,7 +140,7 @@ router.post('/api/auth/login', (req, res) => {
         role: user.role,
         biometricRegistered: user.biometricRegistered
       },
-      token: "binti-jwt-token-" + user.id
+      token
     });
   } else {
     res.status(401).json({ success: false, message: "Invalid email address or passcode." });
@@ -59,13 +148,12 @@ router.post('/api/auth/login', (req, res) => {
 });
 
 // Request Password Reset OTP
-router.post('/api/auth/request-reset', (req, res) => {
+router.post('/api/auth/request-reset', authLimiter, (req, res) => {
   const { email } = req.body;
-  const userKey = email?.toLowerCase()?.trim();
-  const user = users[userKey];
+  const user = findUser(email);
 
   if (!user) {
-    return res.status(444 || 404).json({ 
+    return res.status(404).json({ 
       success: false, 
       message: "No account found matching this corporate email address." 
     });
@@ -74,7 +162,12 @@ router.post('/api/auth/request-reset', (req, res) => {
   // Generate 6-digit OTP PIN
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   user.resetOtp = otp;
-  user.resetOtpExpiry = Date.now() + 15 * 60 * 1000; // 15 minutes validity
+  user.resetOtpExpiry = Date.now() + 15 * 60 * 1000;
+
+  // Development console log for local testing
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`[DEV ONLY] Security OTP generated for ${user.email}: ${otp}`);
+  }
 
   // Send email containing OTP
   sendEmail({
@@ -101,17 +194,16 @@ router.post('/api/auth/request-reset', (req, res) => {
 
   res.json({
     success: true,
-    message: `Security recovery PIN generated for ${user.email}.`,
-    otp, // Returned for instant demo/testing access
-    expiresInSeconds: 900
+    message: `Security recovery PIN sent to ${user.email}. Please check your inbox.`,
+    expiresInSeconds: 900,
+    otp: process.env.NODE_ENV !== 'production' ? otp : undefined
   });
 });
 
 // Reset Password with OTP
-router.post('/api/auth/reset-password', (req, res) => {
+router.post('/api/auth/reset-password', authLimiter, (req, res) => {
   const { email, otp, newPassword } = req.body;
-  const userKey = email?.toLowerCase()?.trim();
-  const user = users[userKey];
+  const user = findUser(email);
 
   if (!user) {
     return res.status(404).json({ success: false, message: "Account not found." });
@@ -129,8 +221,10 @@ router.post('/api/auth/reset-password', (req, res) => {
     return res.status(400).json({ success: false, message: "New passcode must be at least 4 characters long." });
   }
 
-  // Update password
-  user.passwordHash = newPassword;
+  // Update password hash and salt securely
+  const { hash, salt } = hashPassword(newPassword);
+  user.passwordHash = hash;
+  user.passwordSalt = salt;
   user.resetOtp = undefined;
   user.resetOtpExpiry = undefined;
 
@@ -143,8 +237,7 @@ router.post('/api/auth/reset-password', (req, res) => {
 // Register Biometric Fingerprint Passkey
 router.post('/api/auth/register-biometric', (req, res) => {
   const { email, credentialId } = req.body;
-  const userKey = email?.toLowerCase()?.trim();
-  const user = users[userKey];
+  const user = findUser(email);
 
   if (!user) {
     return res.status(404).json({ success: false, message: "User account not found." });
@@ -162,15 +255,12 @@ router.post('/api/auth/register-biometric', (req, res) => {
 });
 
 // Biometric / Fingerprint Quick Login
-router.post('/api/auth/biometric-login', (req, res) => {
-  const { email, credentialId } = req.body;
+router.post('/api/auth/biometric-login', authLimiter, (req, res) => {
+  const { email } = req.body;
   
-  let user: UserAccount | undefined;
+  let user: UserAccount | undefined = findUser(email);
 
-  if (email) {
-    user = users[email.toLowerCase().trim()];
-  } else {
-    // Find user with registered biometrics
+  if (!user) {
     user = Object.values(users).find(u => u.biometricRegistered);
   }
 
@@ -181,6 +271,8 @@ router.post('/api/auth/biometric-login', (req, res) => {
     });
   }
 
+  const token = generateSignedToken({ id: user.id, email: user.email, role: user.role });
+
   res.json({
     success: true,
     user: {
@@ -190,14 +282,14 @@ router.post('/api/auth/biometric-login', (req, res) => {
       role: user.role,
       biometricRegistered: true
     },
-    token: "binti-bio-jwt-" + user.id
+    token
   });
 });
 
 // Request Profile Update OTP (Sent to original/current access email)
-router.post('/api/auth/request-profile-update-otp', (req, res) => {
+router.post('/api/auth/request-profile-update-otp', authLimiter, (req, res) => {
   const { currentEmail } = req.body;
-  const user = users[currentEmail?.toLowerCase()?.trim()];
+  const user = findUser(currentEmail);
 
   if (!user) {
     return res.status(404).json({ success: false, message: "User account not found." });
@@ -205,9 +297,12 @@ router.post('/api/auth/request-profile-update-otp', (req, res) => {
 
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   user.resetOtp = otp;
-  user.resetOtpExpiry = Date.now() + 15 * 60 * 1000; // 15 minutes validity
+  user.resetOtpExpiry = Date.now() + 15 * 60 * 1000;
 
-  // Send verification OTP via email
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`[DEV ONLY] Profile Update OTP generated for ${user.email}: ${otp}`);
+  }
+
   sendEmail({
     to: user.email,
     subject: "Binti Events - Verification Code for Profile Changes",
@@ -231,15 +326,14 @@ router.post('/api/auth/request-profile-update-otp', (req, res) => {
   res.json({
     success: true,
     message: `Verification PIN sent to original email ${user.email}.`,
-    otp // returned for instant sandbox/local testing
+    otp: process.env.NODE_ENV !== 'production' ? otp : undefined
   });
 });
 
 // Verify and Apply Profile Updates (Email / Passcode)
-router.post('/api/auth/verify-profile-update', (req, res) => {
+router.post('/api/auth/verify-profile-update', authLimiter, (req, res) => {
   const { currentEmail, otp, newEmail, newPasscode } = req.body;
-  const userKey = currentEmail?.toLowerCase()?.trim();
-  const user = users[userKey];
+  const user = findUser(currentEmail);
 
   if (!user) {
     return res.status(404).json({ success: false, message: "Original account not found." });
@@ -253,21 +347,23 @@ router.post('/api/auth/verify-profile-update', (req, res) => {
     return res.status(400).json({ success: false, message: "Verification PIN has expired." });
   }
 
-  // Clear OTP
   user.resetOtp = undefined;
   user.resetOtpExpiry = undefined;
 
-  // Apply Changes
   if (newPasscode && newPasscode.length >= 4) {
-    user.passwordHash = newPasscode;
+    const { hash, salt } = hashPassword(newPasscode);
+    user.passwordHash = hash;
+    user.passwordSalt = salt;
   }
 
   if (newEmail && newEmail.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
+    const oldEmail = user.email.toLowerCase().trim();
     const freshEmail = newEmail.toLowerCase().trim();
     user.email = freshEmail;
-    // Update record lookup key
     users[freshEmail] = user;
-    delete users[userKey];
+    if (users[oldEmail] && oldEmail !== 'admin') {
+      delete users[oldEmail];
+    }
   }
 
   res.json({
