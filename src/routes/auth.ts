@@ -195,8 +195,7 @@ router.post('/api/auth/request-reset', authLimiter, (req, res) => {
   res.json({
     success: true,
     message: `Security recovery PIN sent to ${user.email}. Please check your inbox.`,
-    expiresInSeconds: 900,
-    otp: process.env.NODE_ENV !== 'production' ? otp : undefined
+    expiresInSeconds: 900
   });
 });
 
@@ -325,8 +324,7 @@ router.post('/api/auth/request-profile-update-otp', authLimiter, (req, res) => {
 
   res.json({
     success: true,
-    message: `Verification PIN sent to original email ${user.email}.`,
-    otp: process.env.NODE_ENV !== 'production' ? otp : undefined
+    message: `Verification PIN sent to original email ${user.email}.`
   });
 });
 

@@ -115,10 +115,11 @@ function verifySignedToken(token) {
 }
 var adminPass = hashPassword("binti2026");
 var managerPass = hashPassword("manager2026");
+var defaultAdminEmail = process.env.ADMIN_EMAIL || "silvanootieno44@gmail.com";
 var users = {
-  "silvanootieno44@gmail.com": {
+  [defaultAdminEmail.toLowerCase()]: {
     id: "admin",
-    email: "silvanootieno44@gmail.com",
+    email: defaultAdminEmail,
     name: "Admin Binti",
     role: "admin",
     passwordHash: adminPass.hash,
@@ -126,16 +127,24 @@ var users = {
     biometricRegistered: true,
     biometricCredentialId: "bio_credential_admin_binti"
   },
-  "manager@bintievents.com": {
-    id: "manager",
-    email: "manager@bintievents.com",
-    name: "Events Manager",
-    role: "manager",
-    passwordHash: managerPass.hash,
-    passwordSalt: managerPass.salt,
-    biometricRegistered: false
+  "silvanootieno44@gmail.com": {
+    id: "admin",
+    email: defaultAdminEmail,
+    name: "Admin Binti",
+    role: "admin",
+    passwordHash: adminPass.hash,
+    passwordSalt: adminPass.salt,
+    biometricRegistered: true
   }
 };
+function findUser(emailOrId) {
+  if (!emailOrId) return void 0;
+  const key = emailOrId.toLowerCase().trim();
+  if (users[key]) return users[key];
+  return Object.values(users).find(
+    (u) => u.email.toLowerCase() === key || u.id.toLowerCase() === key || u.role === "admin" && (key === "admin" || key === "silvanootieno44@gmail.com" || key === "billing@bintievents.co.ke" || key === "admin@bintievents.co.ke")
+  );
+}
 var authLimiter = (0, import_express_rate_limit.default)({
   windowMs: 15 * 60 * 1e3,
   max: 15,
@@ -163,8 +172,7 @@ router.post("/api/auth/verify", (req, res) => {
 });
 router.post("/api/auth/login", authLimiter, (req, res) => {
   const { email, password } = req.body;
-  const userKey = email?.toLowerCase()?.trim();
-  const user = users[userKey];
+  const user = findUser(email);
   if (user && verifyPassword(password || "", user.passwordSalt, user.passwordHash)) {
     const token = generateSignedToken({ id: user.id, email: user.email, role: user.role });
     res.json({
@@ -184,8 +192,7 @@ router.post("/api/auth/login", authLimiter, (req, res) => {
 });
 router.post("/api/auth/request-reset", authLimiter, (req, res) => {
   const { email } = req.body;
-  const userKey = email?.toLowerCase()?.trim();
-  const user = users[userKey];
+  const user = findUser(email);
   if (!user) {
     return res.status(404).json({
       success: false,
@@ -234,8 +241,7 @@ If you did not request this, please ignore this email.`,
 });
 router.post("/api/auth/reset-password", authLimiter, (req, res) => {
   const { email, otp, newPassword } = req.body;
-  const userKey = email?.toLowerCase()?.trim();
-  const user = users[userKey];
+  const user = findUser(email);
   if (!user) {
     return res.status(404).json({ success: false, message: "Account not found." });
   }
@@ -260,8 +266,7 @@ router.post("/api/auth/reset-password", authLimiter, (req, res) => {
 });
 router.post("/api/auth/register-biometric", (req, res) => {
   const { email, credentialId } = req.body;
-  const userKey = email?.toLowerCase()?.trim();
-  const user = users[userKey];
+  const user = findUser(email);
   if (!user) {
     return res.status(404).json({ success: false, message: "User account not found." });
   }
@@ -276,10 +281,8 @@ router.post("/api/auth/register-biometric", (req, res) => {
 });
 router.post("/api/auth/biometric-login", authLimiter, (req, res) => {
   const { email } = req.body;
-  let user;
-  if (email) {
-    user = users[email.toLowerCase().trim()];
-  } else {
+  let user = findUser(email);
+  if (!user) {
     user = Object.values(users).find((u) => u.biometricRegistered);
   }
   if (!user) {
@@ -303,7 +306,7 @@ router.post("/api/auth/biometric-login", authLimiter, (req, res) => {
 });
 router.post("/api/auth/request-profile-update-otp", authLimiter, (req, res) => {
   const { currentEmail } = req.body;
-  const user = users[currentEmail?.toLowerCase()?.trim()];
+  const user = findUser(currentEmail);
   if (!user) {
     return res.status(404).json({ success: false, message: "User account not found." });
   }
@@ -344,8 +347,7 @@ If you did not request this, please secure your account.`,
 });
 router.post("/api/auth/verify-profile-update", authLimiter, (req, res) => {
   const { currentEmail, otp, newEmail, newPasscode } = req.body;
-  const userKey = currentEmail?.toLowerCase()?.trim();
-  const user = users[userKey];
+  const user = findUser(currentEmail);
   if (!user) {
     return res.status(404).json({ success: false, message: "Original account not found." });
   }
@@ -363,10 +365,13 @@ router.post("/api/auth/verify-profile-update", authLimiter, (req, res) => {
     user.passwordSalt = salt;
   }
   if (newEmail && newEmail.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
+    const oldEmail = user.email.toLowerCase().trim();
     const freshEmail = newEmail.toLowerCase().trim();
     user.email = freshEmail;
     users[freshEmail] = user;
-    delete users[userKey];
+    if (users[oldEmail] && oldEmail !== "admin") {
+      delete users[oldEmail];
+    }
   }
   res.json({
     success: true,
@@ -762,13 +767,28 @@ router5.post("/api/invoices", async (req, res) => {
     const sequence = (db.invoices.length + 1).toString().padStart(3, "0");
     iNum = db.settings.invoiceFormat.replace("{YYYY}", year.toString()).replace("{SEQ}", sequence);
   }
+  const paidSum = (invoiceData.payments || []).reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
+  const grandTotal = Number(invoiceData.grandTotal) || 0;
+  const balanceRemaining = Math.max(0, grandTotal - paidSum);
+  let initialStatus = invoiceData.status || "draft";
+  if (initialStatus !== "cancelled" && initialStatus !== "draft") {
+    if (balanceRemaining === 0) {
+      initialStatus = "paid";
+    } else if (paidSum > 0) {
+      initialStatus = "partially_paid";
+    }
+  }
   const newInvoice = {
     ...invoiceData,
     id: "i_" + Date.now().toString(),
     invoiceNumber: iNum,
-    status: invoiceData.status || "draft",
+    subtotal: Number(invoiceData.subtotal) || 0,
+    discountTotal: Number(invoiceData.discountTotal) || 0,
+    taxTotal: Number(invoiceData.taxTotal) || 0,
+    grandTotal,
+    status: initialStatus,
     payments: invoiceData.payments || [],
-    balanceRemaining: invoiceData.grandTotal - (invoiceData.payments || []).reduce((sum, p) => sum + p.amountPaid, 0)
+    balanceRemaining
   };
   db.invoices.push(newInvoice);
   if (newInvoice.quoteId) {
