@@ -1194,8 +1194,8 @@ function generateContractTerms(params) {
 // src/services/ai-routes.ts
 var router10 = (0, import_express10.Router)();
 async function callGeminiBackendAPI(prompt, history = [], context = {}) {
-  const apiKey2 = process.env.GEMINI_API_KEY || process.env.GEMINI_KEY;
-  if (!apiKey2 || apiKey2.trim() === "") {
+  const apiKey2 = (process.env.GEMINI_API_KEY || process.env.GEMINI_KEY || process.env.GOOGLE_GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.VITE_GEMINI_API_KEY || "").trim();
+  if (!apiKey2) {
     return null;
   }
   const systemInstructionText = `You are Binti, the dedicated, friendly, and expert assistant for Binti Events.
@@ -1212,9 +1212,10 @@ Current Business Metrics:
 Guidelines:
 - Answer the user's specific question directly.
 - Use clean Markdown formatting with bullet points and bolding where appropriate.
+- Never output full unrequested financial health reports unless explicitly asked for business analysis or reports.
 - Keep responses concise, professional, and friendly.`;
   const model = "gemini-2.5-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey2.trim())}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey2)}`;
   const contents = [];
   if (Array.isArray(history)) {
     const validHistory = history.filter((msg) => msg && (msg.role === "user" || msg.role === "model") && msg.content);
@@ -1336,21 +1337,25 @@ Please find the payment instructions attached. If you have any questions or requ
 Warm regards,  
 **Binti Events Team**`;
   }
-  if (p.includes("term") || p.includes("payment term") || p.includes("deposit")) {
-    return `**Standard Recommended Event Terms:**
-1. **50% Commitment Deposit**: Required at booking to reserve event date & equipment.
-2. **50% Final Settlement**: Due 7 days prior to installation day.
-3. **Cancellation**: Cancellations within 14 days forfeit the deposit.`;
-  }
-  return `Hello! I am **Binti**, your assistant for **${context?.companyName || "Binti Events"}**.
+  if (p.includes("term") || p.includes("payment term") || p.includes("deposit") || p.includes("policy")) {
+    return `**Standard Recommended Event Terms & Deposit Policies:**
 
-Currently, your workspace has:
+1. **50% Commitment Deposit**: Required at the time of booking to secure event date, equipment, and logistics crew.
+2. **50% Final Balance**: Payable in full at least 7 days prior to setup and installation.
+3. **Cancellation Policy**: Cancellations within 14 days of the event date forfeit the deposit.
+4. **Site Access**: Client must guarantee ground clearance and 15A power access within 30 metres of setup site.`;
+  }
+  if (p.includes("report") || p.includes("analysis") || p.includes("performance") || p.includes("financial")) {
+    return `**Current Business & Operations Summary:**
 \u2022 **Active Clients:** ${context?.clientCount ?? 0}
 \u2022 **Total Quotes:** ${context?.totalQuotes ?? 0}
 \u2022 **Tax Invoices:** ${context?.totalInvoices ?? 0}
 \u2022 **Total Collected:** ${context?.currency || "KES"} ${(context?.totalRevenue || 0).toLocaleString()}
+\u2022 **Pending Receivables:** ${context?.currency || "KES"} ${(context?.pendingBalance || 0).toLocaleString()}`;
+  }
+  return `Hello! I am **Binti**, your assistant for **${context?.companyName || "Binti Events"}**.
 
-How can I help you with quotes, invoices, or client setup today?`;
+How can I help you with your quotations, billing invoices, client directory, or system settings today?`;
 }
 router10.post("/api/ai/analyze", async (req, res) => {
   try {

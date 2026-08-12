@@ -5,11 +5,19 @@ import { generateBusinessAnalysis, generateEmailDraft, generateContractTerms } f
 const router = Router();
 
 /**
- * Helper to invoke Google Gemini REST API using backend process.env.GEMINI_API_KEY
+ * Helper to invoke Google Gemini REST API using backend process.env keys
  */
 async function callGeminiBackendAPI(prompt: string, history: any[] = [], context: any = {}): Promise<string | null> {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_KEY;
-  if (!apiKey || apiKey.trim() === '') {
+  const apiKey = (
+    process.env.GEMINI_API_KEY || 
+    process.env.GEMINI_KEY || 
+    process.env.GOOGLE_GEMINI_API_KEY || 
+    process.env.GOOGLE_API_KEY ||
+    process.env.VITE_GEMINI_API_KEY ||
+    ''
+  ).trim();
+
+  if (!apiKey) {
     return null;
   }
 
@@ -27,10 +35,11 @@ Current Business Metrics:
 Guidelines:
 - Answer the user's specific question directly.
 - Use clean Markdown formatting with bullet points and bolding where appropriate.
+- Never output full unrequested financial health reports unless explicitly asked for business analysis or reports.
 - Keep responses concise, professional, and friendly.`;
 
   const model = "gemini-2.5-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   // Filter history to ensure Gemini API compliance (must alternate starting with user)
   const contents: any[] = [];
@@ -87,7 +96,6 @@ Guidelines:
     } else {
       const errText = await response.text();
       console.warn(`[Gemini API Backend HTTP ${response.status}]:`, errText);
-      // Fallback to gemini-1.5-flash if 2.5-flash model endpoint is not available
       if (response.status === 404) {
         return callGeminiFallbackBackendAPI(url.replace("gemini-2.5-flash", "gemini-1.5-flash"), systemInstructionText, contents);
       }
@@ -137,7 +145,7 @@ router.post('/api/ai/chat', async (req, res) => {
       return;
     }
 
-    // Context-aware query-specific fallback if GEMINI_API_KEY is not set or API is unreachable
+    // Context-aware query-specific fallback if API key is initializing or unreachable
     const fallbackText = getSmartQueryFallback(prompt, context);
     res.json({ success: true, reply: fallbackText });
   } catch (error: any) {
@@ -147,7 +155,7 @@ router.post('/api/ai/chat', async (req, res) => {
 });
 
 /**
- * Smart Fallback for specific queries when Gemini key is not configured locally
+ * Smart Fallback for specific queries when API key is not configured locally
  */
 function getSmartQueryFallback(prompt: string, context: any = {}): string {
   const p = prompt.toLowerCase();
@@ -183,22 +191,27 @@ Warm regards,
 **Binti Events Team**`;
   }
 
-  if (p.includes("term") || p.includes("payment term") || p.includes("deposit")) {
-    return `**Standard Recommended Event Terms:**
-1. **50% Commitment Deposit**: Required at booking to reserve event date & equipment.
-2. **50% Final Settlement**: Due 7 days prior to installation day.
-3. **Cancellation**: Cancellations within 14 days forfeit the deposit.`;
+  if (p.includes("term") || p.includes("payment term") || p.includes("deposit") || p.includes("policy")) {
+    return `**Standard Recommended Event Terms & Deposit Policies:**
+
+1. **50% Commitment Deposit**: Required at the time of booking to secure event date, equipment, and logistics crew.
+2. **50% Final Balance**: Payable in full at least 7 days prior to setup and installation.
+3. **Cancellation Policy**: Cancellations within 14 days of the event date forfeit the deposit.
+4. **Site Access**: Client must guarantee ground clearance and 15A power access within 30 metres of setup site.`;
   }
 
-  return `Hello! I am **Binti**, your assistant for **${context?.companyName || 'Binti Events'}**.
-
-Currently, your workspace has:
+  if (p.includes("report") || p.includes("analysis") || p.includes("performance") || p.includes("financial")) {
+    return `**Current Business & Operations Summary:**
 • **Active Clients:** ${context?.clientCount ?? 0}
 • **Total Quotes:** ${context?.totalQuotes ?? 0}
 • **Tax Invoices:** ${context?.totalInvoices ?? 0}
 • **Total Collected:** ${context?.currency || 'KES'} ${(context?.totalRevenue || 0).toLocaleString()}
+• **Pending Receivables:** ${context?.currency || 'KES'} ${(context?.pendingBalance || 0).toLocaleString()}`;
+  }
 
-How can I help you with quotes, invoices, or client setup today?`;
+  return `Hello! I am **Binti**, your assistant for **${context?.companyName || 'Binti Events'}**.
+
+How can I help you with your quotations, billing invoices, client directory, or system settings today?`;
 }
 
 // Executive Business Analysis Endpoint
