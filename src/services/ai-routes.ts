@@ -10,8 +10,19 @@ interface CallGeminiResult {
   error?: string;
 }
 
+// Allowed Gemini 3.x Models Whitelist (Strictly as specified)
+const GEMINI_ALLOWED_MODELS = [
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.6-flash",
+  "gemini-3-flash-preview",
+  "gemini-3.1-flash-lite",
+  "gemini-3.1-flash-lite-preview",
+  "gemini-3.1-pro-preview"
+];
+
 /**
- * Invokes Google Gemini REST API targeting official gemini-1.5-flash endpoint
+ * Invokes Google Gemini REST API targeting strictly allowed Gemini 3.x models
  */
 async function callGeminiBackendAPI(prompt: string, history: any[] = [], context: any = {}): Promise<CallGeminiResult> {
   const apiKey = (
@@ -50,9 +61,6 @@ Guidelines:
 - Never output full unrequested financial health reports unless explicitly asked for business analysis or reports.
 - Keep responses concise, professional, and friendly.`;
 
-  // Standard Google AI Studio model candidates for generateContent
-  const targetModels = ["gemini-1.5-flash", "gemini-1.5-pro"];
-
   // Sanitize history for Gemini alternating user/model sequence starting with user
   const contents: any[] = [];
   if (Array.isArray(history)) {
@@ -77,7 +85,7 @@ Guidelines:
     parts: [{ text: prompt }]
   });
 
-  for (const modelName of targetModels) {
+  for (const modelName of GEMINI_ALLOWED_MODELS) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
     try {
@@ -104,7 +112,7 @@ Guidelines:
         }
       } else {
         const errText = await response.text();
-        console.warn(`[Gemini API HTTP ${response.status} for ${modelName}]:`, errText);
+        console.warn(`[Gemini 3.x HTTP ${response.status} for ${modelName}]:`, errText);
         
         if (response.status === 401 || response.status === 403) {
           return { reply: null, statusCode: 401, error: "Gemini API Key Authentication Failed. Please verify GEMINI_API_KEY." };
@@ -114,11 +122,11 @@ Guidelines:
         }
       }
     } catch (err: any) {
-      console.error(`[Gemini API Error for ${modelName}]:`, err);
+      console.error(`[Gemini 3.x Error for ${modelName}]:`, err);
     }
   }
 
-  return { reply: null, statusCode: 500, error: "Failed to generate response from Gemini API." };
+  return { reply: null, statusCode: 500, error: "Failed to generate response from allowed Gemini 3.x models." };
 }
 
 // Binti Interactive Chat Endpoint
@@ -193,7 +201,7 @@ router.post('/api/ai/recommend-terms', (req, res) => {
     res.json({ success: true, terms });
   } catch (error: any) {
     console.error('Error generating terms:', error);
-    res.status(500).json({ success: false, error: 'Failed to recommend terms. ' + (error.message || '') });
+    res.status(500).json({ success: false, message: 'Failed to recommend terms. ' + (error.message || '') });
   }
 });
 
