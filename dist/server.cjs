@@ -1236,8 +1236,9 @@ Current Business & Sales Metrics:
 
 Guidelines:
 - Answer the user's specific question directly with exact context numbers where relevant.
+- Do NOT output any horizontal lines, dashes, or divider symbols (---, ***, ___).
+- Keep text clean, elegant, and executive-ready with natural line breaks and spacing.
 - Provide step-by-step guidance for navigating or completing any task in Binti Events.
-- Use clean Markdown formatting with bullet points and bolding where appropriate.
 - Keep responses concise, helpful, and professional.`;
   const contents = [];
   if (Array.isArray(history)) {
