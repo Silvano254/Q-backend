@@ -4,14 +4,6 @@ import { generateBusinessAnalysis, generateEmailDraft, generateContractTerms } f
 
 const router = Router();
 
-// Filter candidate models strictly for text generation (no TTS, audio, or vision-only models)
-const STRICT_TEXT_MODELS = [
-  "gemini-1.5-flash",
-  "gemini-1.5-pro",
-  "gemini-2.0-flash",
-  "gemini-pro"
-];
-
 interface CallGeminiResult {
   reply: string | null;
   statusCode: number;
@@ -19,52 +11,7 @@ interface CallGeminiResult {
 }
 
 /**
- * Execute backend DB function tools for Binti Function Calling
- */
-async function executeBintiToolCall(name: string, args: any) {
-  const db = await readDB();
-  
-  if (name === "get_outstanding_invoices") {
-    const unpaid = db.invoices.filter(i => i.balanceRemaining > 0);
-    return {
-      totalUnpaidCount: unpaid.length,
-      totalUnpaidAmount: unpaid.reduce((s, i) => s + i.balanceRemaining, 0),
-      currency: db.settings.currency,
-      invoices: unpaid.map(i => ({
-        invoiceNumber: i.invoiceNumber,
-        clientName: i.clientName,
-        grandTotal: i.grandTotal,
-        balanceRemaining: i.balanceRemaining,
-        dueDate: i.dueDate,
-        status: i.status
-      }))
-    };
-  }
-
-  if (name === "get_dashboard_stats") {
-    return {
-      clientCount: db.clients.length,
-      totalQuotes: db.quotes.length,
-      totalInvoices: db.invoices.length,
-      totalRevenue: db.invoices.reduce((s, i) => s + i.payments.reduce((p, pm) => p + pm.amountPaid, 0), 0),
-      pendingBalance: db.invoices.reduce((s, i) => s + i.balanceRemaining, 0),
-      currency: db.settings.currency,
-      companyName: db.settings.companyName
-    };
-  }
-
-  if (name === "get_clients") {
-    return {
-      clientCount: db.clients.length,
-      clients: db.clients.map(c => ({ name: c.name, email: c.email, phone: c.phone, status: c.status, revenue: c.revenue }))
-    };
-  }
-
-  return { message: "Tool executed" };
-}
-
-/**
- * Invokes Google Gemini REST API with strict model capability filtering and HTTP status tracking
+ * Invokes Google Gemini REST API targeting official gemini-1.5-flash endpoint
  */
 async function callGeminiBackendAPI(prompt: string, history: any[] = [], context: any = {}): Promise<CallGeminiResult> {
   const apiKey = (
@@ -103,7 +50,10 @@ Guidelines:
 - Never output full unrequested financial health reports unless explicitly asked for business analysis or reports.
 - Keep responses concise, professional, and friendly.`;
 
-  // Sanitize history for Gemini alternating user/model sequence
+  // Standard Google AI Studio model candidates for generateContent
+  const targetModels = ["gemini-1.5-flash", "gemini-1.5-pro"];
+
+  // Sanitize history for Gemini alternating user/model sequence starting with user
   const contents: any[] = [];
   if (Array.isArray(history)) {
     const validHistory = history.filter((msg: any) => msg && (msg.role === "user" || msg.role === "model") && msg.content);
@@ -127,61 +77,48 @@ Guidelines:
     parts: [{ text: prompt }]
   });
 
-  let lastStatus = 500;
-  let lastError = "Failed to communicate with Gemini API.";
+  for (const modelName of targetModels) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  const apiVersions = ["v1beta", "v1"];
-
-  for (const apiVer of apiVersions) {
-    for (const modelName of STRICT_TEXT_MODELS) {
-      // Ignore any non-text or TTS models
-      if (modelName.includes("tts") || modelName.includes("audio")) continue;
-
-      const url = `https://generativelanguage.googleapis.com/${apiVer}/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
-
-      try {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: systemInstructionText }] },
-            contents,
-            generationConfig: {
-              temperature: 0.7,
-              topK: 40,
-              topP: 0.95,
-              maxOutputTokens: 1024
-            }
-          })
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text) {
-            return { reply: text, statusCode: 200 };
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemInstructionText }] },
+          contents,
+          generationConfig: {
+            temperature: 0.7,
+            topK: 40,
+            topP: 0.95,
+            maxOutputTokens: 1024
           }
-        } else {
-          lastStatus = response.status;
-          const errText = await response.text();
-          console.warn(`[Gemini API HTTP ${response.status} for ${apiVer}/${modelName}]:`, errText);
-          
-          if (response.status === 401 || response.status === 403) {
-            return { reply: null, statusCode: 401, error: "Gemini API Key Authentication Failed. Please verify GEMINI_API_KEY." };
-          }
-          if (response.status === 429) {
-            return { reply: null, statusCode: 429, error: "Gemini API Rate Limit or Quota Exceeded." };
-          }
-          lastError = errText;
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          return { reply: text, statusCode: 200 };
         }
-      } catch (err: any) {
-        console.error(`[Gemini API Error for ${apiVer}/${modelName}]:`, err);
-        lastError = err.message || "Network error connecting to Gemini API.";
+      } else {
+        const errText = await response.text();
+        console.warn(`[Gemini API HTTP ${response.status} for ${modelName}]:`, errText);
+        
+        if (response.status === 401 || response.status === 403) {
+          return { reply: null, statusCode: 401, error: "Gemini API Key Authentication Failed. Please verify GEMINI_API_KEY." };
+        }
+        if (response.status === 429) {
+          return { reply: null, statusCode: 429, error: "Gemini API Rate Limit or Quota Exceeded." };
+        }
       }
+    } catch (err: any) {
+      console.error(`[Gemini API Error for ${modelName}]:`, err);
     }
   }
 
-  return { reply: null, statusCode: lastStatus, error: lastError };
+  return { reply: null, statusCode: 500, error: "Failed to generate response from Gemini API." };
 }
 
 // Binti Interactive Chat Endpoint
@@ -200,7 +137,6 @@ router.post('/api/ai/chat', async (req, res) => {
       return;
     }
 
-    // Return appropriate HTTP status error code to frontend instead of masking as 200 OK!
     res.status(result.statusCode || 500).json({
       success: false,
       error: result.error || "Gemini AI processing failed.",
