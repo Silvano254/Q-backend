@@ -1193,6 +1193,30 @@ function generateContractTerms(params) {
 
 // src/services/ai-routes.ts
 var router10 = (0, import_express10.Router)();
+var cachedValidModel = null;
+async function discoverValidGeminiModel(apiKey2) {
+  if (cachedValidModel) {
+    return [cachedValidModel, "gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-pro"];
+  }
+  try {
+    const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey2)}`;
+    const res = await fetch(listUrl);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.models)) {
+        const generateModels = data.models.filter((m) => m && Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent")).map((m) => m.name.replace("models/", ""));
+        if (generateModels.length > 0) {
+          console.log("[Gemini API] Dynamically discovered models for key:", generateModels);
+          cachedValidModel = generateModels[0];
+          return generateModels;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[Gemini Model Discovery Warning]:", err);
+  }
+  return ["gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-pro"];
+}
 async function callGeminiBackendAPI(prompt, history = [], context = {}) {
   const apiKey2 = (process.env.GEMINI_API_KEY || process.env.GEMINI_KEY || process.env.GOOGLE_GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.VITE_GEMINI_API_KEY || process.env.API_KEY || "").trim();
   if (!apiKey2) {
@@ -1216,7 +1240,7 @@ Guidelines:
 - Use clean Markdown formatting with bullet points and bolding where appropriate.
 - Never output full unrequested financial health reports unless explicitly asked for business analysis or reports.
 - Keep responses concise, professional, and friendly.`;
-  const modelsToTry = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"];
+  const modelsToTry = await discoverValidGeminiModel(apiKey2);
   const contents = [];
   if (Array.isArray(history)) {
     const validHistory = history.filter((msg) => msg && (msg.role === "user" || msg.role === "model") && msg.content);
@@ -1237,35 +1261,41 @@ Guidelines:
     role: "user",
     parts: [{ text: prompt }]
   });
-  for (const modelName of modelsToTry) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey2)}`;
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: systemInstructionText }]
-          },
-          contents,
-          generationConfig: {
-            temperature: 0.7,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 1024
+  const apiVersions = ["v1beta", "v1"];
+  for (const apiVer of apiVersions) {
+    for (const modelName of modelsToTry) {
+      const url = `https://generativelanguage.googleapis.com/${apiVer}/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey2)}`;
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: systemInstructionText }]
+            },
+            contents,
+            generationConfig: {
+              temperature: 0.7,
+              topK: 40,
+              topP: 0.95,
+              maxOutputTokens: 1024
+            }
+          })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            cachedValidModel = modelName;
+            return text;
           }
-        })
-      });
-      if (response.ok) {
-        const data = await response.json();
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) return text;
-      } else {
-        const errText = await response.text();
-        console.warn(`[Gemini API Backend HTTP ${response.status} for ${modelName}]:`, errText);
+        } else {
+          const errText = await response.text();
+          console.warn(`[Gemini API Backend HTTP ${response.status} for ${apiVer}/${modelName}]:`, errText);
+        }
+      } catch (err) {
+        console.error(`[Gemini API Backend Error for ${apiVer}/${modelName}]:`, err);
       }
-    } catch (err) {
-      console.error(`[Gemini API Backend Error for ${modelName}]:`, err);
     }
   }
   return null;

@@ -4,6 +4,41 @@ import { generateBusinessAnalysis, generateEmailDraft, generateContractTerms } f
 
 const router = Router();
 
+// Cache discovered valid model name across requests
+let cachedValidModel: string | null = null;
+
+/**
+ * Dynamically discover available Gemini models for the provided API key
+ */
+async function discoverValidGeminiModel(apiKey: string): Promise<string[]> {
+  if (cachedValidModel) {
+    return [cachedValidModel, "gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-pro"];
+  }
+
+  try {
+    const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(listUrl);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.models)) {
+        const generateModels = data.models
+          .filter((m: any) => m && Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent"))
+          .map((m: any) => m.name.replace("models/", ""));
+        
+        if (generateModels.length > 0) {
+          console.log('[Gemini API] Dynamically discovered models for key:', generateModels);
+          cachedValidModel = generateModels[0];
+          return generateModels;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Gemini Model Discovery Warning]:', err);
+  }
+
+  return ["gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-pro"];
+}
+
 /**
  * Helper to invoke Google Gemini REST API using backend process.env keys
  */
@@ -41,17 +76,14 @@ Guidelines:
 - Never output full unrequested financial health reports unless explicitly asked for business analysis or reports.
 - Keep responses concise, professional, and friendly.`;
 
-  // Standard Google AI Studio model identifier for Gemini v1beta API
-  const modelsToTry = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"];
+  const modelsToTry = await discoverValidGeminiModel(apiKey);
 
   // Filter history to ensure Gemini API compliance (must alternate starting with user)
   const contents: any[] = [];
 
   if (Array.isArray(history)) {
-    // Filter out system or initial model greeting if present at start
     const validHistory = history.filter((msg: any) => msg && (msg.role === "user" || msg.role === "model") && msg.content);
     
-    // Drop leading model turns if present
     while (validHistory.length > 0 && validHistory[0].role === "model") {
       validHistory.shift();
     }
@@ -64,9 +96,8 @@ Guidelines:
     });
   }
 
-  // Ensure alternating user/model sequence before adding latest user prompt
   if (contents.length > 0 && contents[contents.length - 1].role === "user") {
-    contents.pop(); // Remove duplicate consecutive user turn if any
+    contents.pop();
   }
 
   contents.push({
@@ -74,37 +105,44 @@ Guidelines:
     parts: [{ text: prompt }]
   });
 
-  for (const modelName of modelsToTry) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const apiVersions = ["v1beta", "v1"];
 
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: systemInstructionText }]
-          },
-          contents,
-          generationConfig: {
-            temperature: 0.7,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 1024
+  for (const apiVer of apiVersions) {
+    for (const modelName of modelsToTry) {
+      const url = `https://generativelanguage.googleapis.com/${apiVer}/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: systemInstructionText }]
+            },
+            contents,
+            generationConfig: {
+              temperature: 0.7,
+              topK: 40,
+              topP: 0.95,
+              maxOutputTokens: 1024
+            }
+          })
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            cachedValidModel = modelName;
+            return text;
           }
-        })
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) return text;
-      } else {
-        const errText = await response.text();
-        console.warn(`[Gemini API Backend HTTP ${response.status} for ${modelName}]:`, errText);
+        } else {
+          const errText = await response.text();
+          console.warn(`[Gemini API Backend HTTP ${response.status} for ${apiVer}/${modelName}]:`, errText);
+        }
+      } catch (err) {
+        console.error(`[Gemini API Backend Error for ${apiVer}/${modelName}]:`, err);
       }
-    } catch (err) {
-      console.error(`[Gemini API Backend Error for ${modelName}]:`, err);
     }
   }
 
@@ -126,7 +164,7 @@ router.post('/api/ai/chat', async (req, res) => {
       return;
     }
 
-    // Context-aware query-specific fallback if API key is initializing or unreachable
+    // Context-aware query-specific fallback if API key is initializing
     const fallbackText = getSmartQueryFallback(prompt, context);
     res.json({ success: true, reply: fallbackText });
   } catch (error: any) {
