@@ -1198,25 +1198,38 @@ async function callGeminiBackendAPI(prompt, history = [], context = {}) {
   if (!apiKey2 || apiKey2.trim() === "") {
     return null;
   }
-  const systemInstruction = `You are Binti, the intelligent, highly capable, professional, and friendly assistant for Binti Events.
-Role: Help company admins, finance directors, and event managers with using Binti Events (Quotes, Invoices, Clients, Products, Reports, Settings).
-Context: Company Name: ${context.companyName || "Binti Events"}, Currency: ${context.currency || "USD"}, Clients: ${context.clientCount ?? 0}, Quotes: ${context.totalQuotes ?? 0}, Invoices: ${context.totalInvoices ?? 0}, Revenue: ${context.totalRevenue ?? 0}, Outstanding: ${context.pendingBalance ?? 0}.
-Guidelines: Provide clean Markdown answers, keep responses concise, clear, and direct.`;
+  const systemInstructionText = `You are Binti, the dedicated, friendly, and expert assistant for Binti Events.
+Your role: Provide concise, accurate, and helpful answers to company admins regarding Binti Events operations (Quotations, Tax Invoices, Payments Ledger, Clients Directory, Products & Services Catalog, Reports & Settings).
+Current Business Metrics:
+- Company Name: ${context.companyName || "Binti Events"}
+- Currency: ${context.currency || "KES"}
+- Active Clients: ${context.clientCount ?? 0}
+- Quotes Issued: ${context.totalQuotes ?? 0}
+- Invoices Issued: ${context.totalInvoices ?? 0}
+- Total Revenue Collected: ${context.currency || "KES"} ${(context.totalRevenue || 0).toLocaleString()}
+- Outstanding Balance: ${context.currency || "KES"} ${(context.pendingBalance || 0).toLocaleString()}
+
+Guidelines:
+- Answer the user's specific question directly.
+- Use clean Markdown formatting with bullet points and bolding where appropriate.
+- Keep responses concise, professional, and friendly.`;
   const model = "gemini-2.5-flash";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey2.trim())}`;
-  const contents = [
-    { role: "user", parts: [{ text: systemInstruction }] },
-    { role: "model", parts: [{ text: "Understood. I am Binti, your assistant for Binti Events. How may I assist you today?" }] }
-  ];
+  const contents = [];
   if (Array.isArray(history)) {
-    history.slice(-8).forEach((msg) => {
-      if (msg && msg.role && msg.content && msg.role !== "system") {
-        contents.push({
-          role: msg.role === "model" ? "model" : "user",
-          parts: [{ text: msg.content }]
-        });
-      }
+    const validHistory = history.filter((msg) => msg && (msg.role === "user" || msg.role === "model") && msg.content);
+    while (validHistory.length > 0 && validHistory[0].role === "model") {
+      validHistory.shift();
+    }
+    validHistory.slice(-6).forEach((msg) => {
+      contents.push({
+        role: msg.role === "model" ? "model" : "user",
+        parts: [{ text: msg.content }]
+      });
     });
+  }
+  if (contents.length > 0 && contents[contents.length - 1].role === "user") {
+    contents.pop();
   }
   contents.push({
     role: "user",
@@ -1227,6 +1240,9 @@ Guidelines: Provide clean Markdown answers, keep responses concise, clear, and d
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: systemInstructionText }]
+        },
         contents,
         generationConfig: {
           temperature: 0.7,
@@ -1240,9 +1256,34 @@ Guidelines: Provide clean Markdown answers, keep responses concise, clear, and d
       const data = await response.json();
       const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
       if (text) return text;
+    } else {
+      const errText = await response.text();
+      console.warn(`[Gemini API Backend HTTP ${response.status}]:`, errText);
+      if (response.status === 404) {
+        return callGeminiFallbackBackendAPI(url.replace("gemini-2.5-flash", "gemini-1.5-flash"), systemInstructionText, contents);
+      }
     }
   } catch (err) {
     console.error("[Gemini API Backend Error]:", err);
+  }
+  return null;
+}
+async function callGeminiFallbackBackendAPI(url, systemInstructionText, contents) {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemInstructionText }] },
+        contents
+      })
+    });
+    if (response.ok) {
+      const data = await response.json();
+      return data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
+    }
+  } catch (err) {
+    console.error("[Gemini API Fallback Backend Error]:", err);
   }
   return null;
 }
@@ -1258,18 +1299,59 @@ router10.post("/api/ai/chat", async (req, res) => {
       res.json({ success: true, reply: geminiReply });
       return;
     }
-    const db = await readDB();
-    const fallbackText = generateBusinessAnalysis(db);
-    res.json({ success: true, reply: `I am Binti, your assistant for Binti Events.
-
-Here is a quick overview of your current metrics:
-
-${fallbackText}` });
+    const fallbackText = getSmartQueryFallback(prompt, context);
+    res.json({ success: true, reply: fallbackText });
   } catch (error) {
     console.error("Error handling AI chat:", error);
     res.status(500).json({ success: false, message: "Failed to process chat request. " + (error.message || "") });
   }
 });
+function getSmartQueryFallback(prompt, context = {}) {
+  const p = prompt.toLowerCase();
+  if (p.includes("convert") || p.includes("quote") && p.includes("invoice")) {
+    return `To convert a Quotation into a Tax Invoice:
+1. Click **Quotes** in the left navigation menu.
+2. Find the target proposal in your quotes list.
+3. Click **Actions** -> select **"Convert to Invoice"**.
+4. Confirm line items & terms, then click **Save & Issue**.`;
+  }
+  if (p.includes("client") || p.includes("add client") || p.includes("new client")) {
+    return `To add or manage client profiles:
+1. Navigate to **Clients** in the left menu.
+2. Click the **"+ Add New Client"** button in the top right.
+3. Enter the client's company name, contact person, email, and phone number.
+4. Click **Save Client**.`;
+  }
+  if (p.includes("email") || p.includes("reminder") || p.includes("draft")) {
+    return `Here is a sample payment reminder template:
+
+**Subject:** Follow-up regarding Invoice \u2014 ${context?.companyName || "Binti Events"}
+
+Dear Valued Client,
+
+We hope this message finds you well. We are writing to kindly follow up regarding your pending invoice with Binti Events. 
+
+Please find the payment instructions attached. If you have any questions or require assistance, please feel free to contact our team.
+
+Warm regards,  
+**Binti Events Team**`;
+  }
+  if (p.includes("term") || p.includes("payment term") || p.includes("deposit")) {
+    return `**Standard Recommended Event Terms:**
+1. **50% Commitment Deposit**: Required at booking to reserve event date & equipment.
+2. **50% Final Settlement**: Due 7 days prior to installation day.
+3. **Cancellation**: Cancellations within 14 days forfeit the deposit.`;
+  }
+  return `Hello! I am **Binti**, your assistant for **${context?.companyName || "Binti Events"}**.
+
+Currently, your workspace has:
+\u2022 **Active Clients:** ${context?.clientCount ?? 0}
+\u2022 **Total Quotes:** ${context?.totalQuotes ?? 0}
+\u2022 **Tax Invoices:** ${context?.totalInvoices ?? 0}
+\u2022 **Total Collected:** ${context?.currency || "KES"} ${(context?.totalRevenue || 0).toLocaleString()}
+
+How can I help you with quotes, invoices, or client setup today?`;
+}
 router10.post("/api/ai/analyze", async (req, res) => {
   try {
     const db = await readDB();
