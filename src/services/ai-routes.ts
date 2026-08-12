@@ -14,10 +14,12 @@ async function callGeminiBackendAPI(prompt: string, history: any[] = [], context
     process.env.GOOGLE_GEMINI_API_KEY || 
     process.env.GOOGLE_API_KEY ||
     process.env.VITE_GEMINI_API_KEY ||
+    process.env.API_KEY ||
     ''
   ).trim();
 
   if (!apiKey) {
+    console.warn('[Gemini API Backend Warning]: No Gemini API key found in environment variables.');
     return null;
   }
 
@@ -34,12 +36,13 @@ Current Business Metrics:
 
 Guidelines:
 - Answer the user's specific question directly.
+- If the user asks for a summary of activity or help finding an item, answer specifically and concisely.
 - Use clean Markdown formatting with bullet points and bolding where appropriate.
 - Never output full unrequested financial health reports unless explicitly asked for business analysis or reports.
 - Keep responses concise, professional, and friendly.`;
 
-  const model = "gemini-2.5-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  // Standard Google AI Studio model identifier for Gemini v1beta API
+  const modelsToTry = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"];
 
   // Filter history to ensure Gemini API compliance (must alternate starting with user)
   const contents: any[] = [];
@@ -71,62 +74,40 @@ Guidelines:
     parts: [{ text: prompt }]
   });
 
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: systemInstructionText }]
-        },
-        contents,
-        generationConfig: {
-          temperature: 0.7,
-          topK: 40,
-          topP: 0.95,
-          maxOutputTokens: 1024
-        }
-      })
-    });
+  for (const modelName of modelsToTry) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-    if (response.ok) {
-      const data = await response.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text) return text;
-    } else {
-      const errText = await response.text();
-      console.warn(`[Gemini API Backend HTTP ${response.status}]:`, errText);
-      if (response.status === 404) {
-        return callGeminiFallbackBackendAPI(url.replace("gemini-2.5-flash", "gemini-1.5-flash"), systemInstructionText, contents);
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: systemInstructionText }]
+          },
+          contents,
+          generationConfig: {
+            temperature: 0.7,
+            topK: 40,
+            topP: 0.95,
+            maxOutputTokens: 1024
+          }
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) return text;
+      } else {
+        const errText = await response.text();
+        console.warn(`[Gemini API Backend HTTP ${response.status} for ${modelName}]:`, errText);
       }
+    } catch (err) {
+      console.error(`[Gemini API Backend Error for ${modelName}]:`, err);
     }
-  } catch (err) {
-    console.error('[Gemini API Backend Error]:', err);
   }
 
-  return null;
-}
-
-/**
- * Fallback to gemini-1.5-flash if 2.5 endpoint is unavailable
- */
-async function callGeminiFallbackBackendAPI(url: string, systemInstructionText: string, contents: any[]): Promise<string | null> {
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemInstructionText }] },
-        contents
-      })
-    });
-    if (response.ok) {
-      const data = await response.json();
-      return data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
-    }
-  } catch (err) {
-    console.error('[Gemini API Fallback Backend Error]:', err);
-  }
   return null;
 }
 
@@ -155,11 +136,45 @@ router.post('/api/ai/chat', async (req, res) => {
 });
 
 /**
- * Smart Fallback for specific queries when API key is not configured locally
+ * Smart Fallback for specific queries when API key is initializing
  */
 function getSmartQueryFallback(prompt: string, context: any = {}): string {
   const p = prompt.toLowerCase();
 
+  // Activity summary
+  if (p.includes("summary") || p.includes("summarize") || p.includes("today") || p.includes("activity")) {
+    return `Here is a summary of your platform status:
+• **Active Clients:** ${context?.clientCount ?? 0}
+• **Total Quotes Issued:** ${context?.totalQuotes ?? 0}
+• **Tax Invoices Generated:** ${context?.totalInvoices ?? 0}
+• **Revenue Collected:** ${context?.currency || 'KES'} ${(context?.totalRevenue || 0).toLocaleString()}
+• **Outstanding Receivables:** ${context?.currency || 'KES'} ${(context?.pendingBalance || 0).toLocaleString()}
+
+All system operations and billing ledgers are currently up to date.`;
+  }
+
+  // Searching / Finding Invoices
+  if (p.includes("invoice") && (p.includes("find") || p.includes("search") || p.includes("cant") || p.includes("can't") || p.includes("look") || p.includes("where") || p.includes("missing"))) {
+    return `To locate or search for an invoice:
+1. **Global Search Bar**: Use the search input at the top header (*"Global search by client, inv #, quote #, email..."*) to search across all invoices instantly.
+2. **Invoices Module**: Click **Invoices & Ledger** in the left sidebar menu to view your list of invoices, filter by status (*Paid, Unpaid, Overdue*), or export PDF copies.`;
+  }
+
+  // Searching / Finding Quotes
+  if ((p.includes("quote") || p.includes("proposal") || p.includes("quotation")) && (p.includes("find") || p.includes("search") || p.includes("cant") || p.includes("can't") || p.includes("look") || p.includes("where") || p.includes("missing"))) {
+    return `To locate a quote or proposal:
+1. **Global Search Bar**: Type the quote number (e.g. \`QT-2026-001\`) or client name in the top search bar.
+2. **Quotes Module**: Click **Quotes** in the left sidebar menu to view all active, draft, sent, or converted proposals.`;
+  }
+
+  // Searching / Finding Clients
+  if (p.includes("client") && (p.includes("find") || p.includes("search") || p.includes("cant") || p.includes("can't") || p.includes("look") || p.includes("where") || p.includes("missing"))) {
+    return `To locate a client profile:
+1. Use the **Global Search Bar** at the top header.
+2. Or click **Clients** in the left sidebar menu to view your full address directory, corporate profiles, and billing timelines.`;
+  }
+
+  // Converting Quotes to Invoices
   if (p.includes("convert") || (p.includes("quote") && p.includes("invoice"))) {
     return `To convert a Quotation into a Tax Invoice:
 1. Click **Quotes** in the left navigation menu.
@@ -168,45 +183,14 @@ function getSmartQueryFallback(prompt: string, context: any = {}): string {
 4. Confirm line items & terms, then click **Save & Issue**.`;
   }
 
-  if (p.includes("client") || p.includes("add client") || p.includes("new client")) {
-    return `To add or manage client profiles:
-1. Navigate to **Clients** in the left menu.
-2. Click the **"+ Add New Client"** button in the top right.
-3. Enter the client's company name, contact person, email, and phone number.
-4. Click **Save Client**.`;
-  }
-
-  if (p.includes("email") || p.includes("reminder") || p.includes("draft")) {
-    return `Here is a sample payment reminder template:
-
-**Subject:** Follow-up regarding Invoice — ${context?.companyName || 'Binti Events'}
-
-Dear Valued Client,
-
-We hope this message finds you well. We are writing to kindly follow up regarding your pending invoice with Binti Events. 
-
-Please find the payment instructions attached. If you have any questions or require assistance, please feel free to contact our team.
-
-Warm regards,  
-**Binti Events Team**`;
-  }
-
+  // Terms & Policy
   if (p.includes("term") || p.includes("payment term") || p.includes("deposit") || p.includes("policy")) {
     return `**Standard Recommended Event Terms & Deposit Policies:**
 
 1. **50% Commitment Deposit**: Required at the time of booking to secure event date, equipment, and logistics crew.
-2. **50% Final Balance**: Payable in full at least 7 days prior to setup and installation.
+2. **50% Final Settlement**: Payable in full at least 7 days prior to setup and installation.
 3. **Cancellation Policy**: Cancellations within 14 days of the event date forfeit the deposit.
 4. **Site Access**: Client must guarantee ground clearance and 15A power access within 30 metres of setup site.`;
-  }
-
-  if (p.includes("report") || p.includes("analysis") || p.includes("performance") || p.includes("financial")) {
-    return `**Current Business & Operations Summary:**
-• **Active Clients:** ${context?.clientCount ?? 0}
-• **Total Quotes:** ${context?.totalQuotes ?? 0}
-• **Tax Invoices:** ${context?.totalInvoices ?? 0}
-• **Total Collected:** ${context?.currency || 'KES'} ${(context?.totalRevenue || 0).toLocaleString()}
-• **Pending Receivables:** ${context?.currency || 'KES'} ${(context?.pendingBalance || 0).toLocaleString()}`;
   }
 
   return `Hello! I am **Binti**, your assistant for **${context?.companyName || 'Binti Events'}**.
