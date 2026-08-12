@@ -4,45 +4,69 @@ import { generateBusinessAnalysis, generateEmailDraft, generateContractTerms } f
 
 const router = Router();
 
-// Cache discovered valid model name across requests
-let cachedValidModel: string | null = null;
+// Filter candidate models strictly for text generation (no TTS, audio, or vision-only models)
+const STRICT_TEXT_MODELS = [
+  "gemini-1.5-flash",
+  "gemini-1.5-pro",
+  "gemini-2.0-flash",
+  "gemini-pro"
+];
 
-/**
- * Dynamically discover available Gemini models for the provided API key
- */
-async function discoverValidGeminiModel(apiKey: string): Promise<string[]> {
-  if (cachedValidModel) {
-    return [cachedValidModel, "gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-pro"];
-  }
-
-  try {
-    const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
-    const res = await fetch(listUrl);
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data?.models)) {
-        const generateModels = data.models
-          .filter((m: any) => m && Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent"))
-          .map((m: any) => m.name.replace("models/", ""));
-        
-        if (generateModels.length > 0) {
-          console.log('[Gemini API] Dynamically discovered models for key:', generateModels);
-          cachedValidModel = generateModels[0];
-          return generateModels;
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('[Gemini Model Discovery Warning]:', err);
-  }
-
-  return ["gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-pro"];
+interface CallGeminiResult {
+  reply: string | null;
+  statusCode: number;
+  error?: string;
 }
 
 /**
- * Helper to invoke Google Gemini REST API using backend process.env keys
+ * Execute backend DB function tools for Binti Function Calling
  */
-async function callGeminiBackendAPI(prompt: string, history: any[] = [], context: any = {}): Promise<string | null> {
+async function executeBintiToolCall(name: string, args: any) {
+  const db = await readDB();
+  
+  if (name === "get_outstanding_invoices") {
+    const unpaid = db.invoices.filter(i => i.balanceRemaining > 0);
+    return {
+      totalUnpaidCount: unpaid.length,
+      totalUnpaidAmount: unpaid.reduce((s, i) => s + i.balanceRemaining, 0),
+      currency: db.settings.currency,
+      invoices: unpaid.map(i => ({
+        invoiceNumber: i.invoiceNumber,
+        clientName: i.clientName,
+        grandTotal: i.grandTotal,
+        balanceRemaining: i.balanceRemaining,
+        dueDate: i.dueDate,
+        status: i.status
+      }))
+    };
+  }
+
+  if (name === "get_dashboard_stats") {
+    return {
+      clientCount: db.clients.length,
+      totalQuotes: db.quotes.length,
+      totalInvoices: db.invoices.length,
+      totalRevenue: db.invoices.reduce((s, i) => s + i.payments.reduce((p, pm) => p + pm.amountPaid, 0), 0),
+      pendingBalance: db.invoices.reduce((s, i) => s + i.balanceRemaining, 0),
+      currency: db.settings.currency,
+      companyName: db.settings.companyName
+    };
+  }
+
+  if (name === "get_clients") {
+    return {
+      clientCount: db.clients.length,
+      clients: db.clients.map(c => ({ name: c.name, email: c.email, phone: c.phone, status: c.status, revenue: c.revenue }))
+    };
+  }
+
+  return { message: "Tool executed" };
+}
+
+/**
+ * Invokes Google Gemini REST API with strict model capability filtering and HTTP status tracking
+ */
+async function callGeminiBackendAPI(prompt: string, history: any[] = [], context: any = {}): Promise<CallGeminiResult> {
   const apiKey = (
     process.env.GEMINI_API_KEY || 
     process.env.GEMINI_KEY || 
@@ -54,11 +78,14 @@ async function callGeminiBackendAPI(prompt: string, history: any[] = [], context
   ).trim();
 
   if (!apiKey) {
-    console.warn('[Gemini API Backend Warning]: No Gemini API key found in environment variables.');
-    return null;
+    return {
+      reply: null,
+      statusCode: 401,
+      error: "No Gemini API Key found in server environment variables (GEMINI_API_KEY)."
+    };
   }
 
-  const systemInstructionText = `You are Binti, the dedicated, friendly, and expert assistant for Binti Events.
+  const systemInstructionText = `You are Binti, the intelligent, friendly, and expert assistant for Binti Events.
 Your role: Provide concise, accurate, and helpful answers to company admins regarding Binti Events operations (Quotations, Tax Invoices, Payments Ledger, Clients Directory, Products & Services Catalog, Reports & Settings).
 Current Business Metrics:
 - Company Name: ${context.companyName || 'Binti Events'}
@@ -71,23 +98,18 @@ Current Business Metrics:
 
 Guidelines:
 - Answer the user's specific question directly.
-- If the user asks for a summary of activity or help finding an item, answer specifically and concisely.
+- If asking about outstanding balances or who owes money, summarize unpaid invoices clearly with client names and balances.
 - Use clean Markdown formatting with bullet points and bolding where appropriate.
 - Never output full unrequested financial health reports unless explicitly asked for business analysis or reports.
 - Keep responses concise, professional, and friendly.`;
 
-  const modelsToTry = await discoverValidGeminiModel(apiKey);
-
-  // Filter history to ensure Gemini API compliance (must alternate starting with user)
+  // Sanitize history for Gemini alternating user/model sequence
   const contents: any[] = [];
-
   if (Array.isArray(history)) {
     const validHistory = history.filter((msg: any) => msg && (msg.role === "user" || msg.role === "model") && msg.content);
-    
     while (validHistory.length > 0 && validHistory[0].role === "model") {
       validHistory.shift();
     }
-
     validHistory.slice(-6).forEach((msg: any) => {
       contents.push({
         role: msg.role === "model" ? "model" : "user",
@@ -105,10 +127,16 @@ Guidelines:
     parts: [{ text: prompt }]
   });
 
+  let lastStatus = 500;
+  let lastError = "Failed to communicate with Gemini API.";
+
   const apiVersions = ["v1beta", "v1"];
 
   for (const apiVer of apiVersions) {
-    for (const modelName of modelsToTry) {
+    for (const modelName of STRICT_TEXT_MODELS) {
+      // Ignore any non-text or TTS models
+      if (modelName.includes("tts") || modelName.includes("audio")) continue;
+
       const url = `https://generativelanguage.googleapis.com/${apiVer}/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
       try {
@@ -116,9 +144,7 @@ Guidelines:
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            systemInstruction: {
-              parts: [{ text: systemInstructionText }]
-            },
+            systemInstruction: { parts: [{ text: systemInstructionText }] },
             contents,
             generationConfig: {
               temperature: 0.7,
@@ -133,20 +159,29 @@ Guidelines:
           const data = await response.json();
           const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
           if (text) {
-            cachedValidModel = modelName;
-            return text;
+            return { reply: text, statusCode: 200 };
           }
         } else {
+          lastStatus = response.status;
           const errText = await response.text();
-          console.warn(`[Gemini API Backend HTTP ${response.status} for ${apiVer}/${modelName}]:`, errText);
+          console.warn(`[Gemini API HTTP ${response.status} for ${apiVer}/${modelName}]:`, errText);
+          
+          if (response.status === 401 || response.status === 403) {
+            return { reply: null, statusCode: 401, error: "Gemini API Key Authentication Failed. Please verify GEMINI_API_KEY." };
+          }
+          if (response.status === 429) {
+            return { reply: null, statusCode: 429, error: "Gemini API Rate Limit or Quota Exceeded." };
+          }
+          lastError = errText;
         }
-      } catch (err) {
-        console.error(`[Gemini API Backend Error for ${apiVer}/${modelName}]:`, err);
+      } catch (err: any) {
+        console.error(`[Gemini API Error for ${apiVer}/${modelName}]:`, err);
+        lastError = err.message || "Network error connecting to Gemini API.";
       }
     }
   }
 
-  return null;
+  return { reply: null, statusCode: lastStatus, error: lastError };
 }
 
 // Binti Interactive Chat Endpoint
@@ -154,93 +189,34 @@ router.post('/api/ai/chat', async (req, res) => {
   try {
     const { prompt, history, context } = req.body;
     if (!prompt || typeof prompt !== 'string') {
-      res.status(400).json({ success: false, message: 'Prompt parameter is required.' });
+      res.status(400).json({ success: false, error: 'Prompt parameter is required.' });
       return;
     }
 
-    const geminiReply = await callGeminiBackendAPI(prompt, history, context);
-    if (geminiReply) {
-      res.json({ success: true, reply: geminiReply });
+    const result = await callGeminiBackendAPI(prompt, history, context);
+    
+    if (result.reply) {
+      res.status(200).json({ success: true, reply: result.reply });
       return;
     }
 
-    // Context-aware query-specific fallback if API key is initializing
-    const fallbackText = getSmartQueryFallback(prompt, context);
-    res.json({ success: true, reply: fallbackText });
+    // Return appropriate HTTP status error code to frontend instead of masking as 200 OK!
+    res.status(result.statusCode || 500).json({
+      success: false,
+      error: result.error || "Gemini AI processing failed.",
+      statusCode: result.statusCode
+    });
   } catch (error: any) {
     console.error('Error handling AI chat:', error);
-    res.status(500).json({ success: false, message: 'Failed to process chat request. ' + (error.message || '') });
+    res.status(500).json({ success: false, error: 'Failed to process chat request. ' + (error.message || '') });
   }
 });
-
-/**
- * Smart Fallback for specific queries when API key is initializing
- */
-function getSmartQueryFallback(prompt: string, context: any = {}): string {
-  const p = prompt.toLowerCase();
-
-  // Activity summary
-  if (p.includes("summary") || p.includes("summarize") || p.includes("today") || p.includes("activity")) {
-    return `Here is a summary of your platform status:
-• **Active Clients:** ${context?.clientCount ?? 0}
-• **Total Quotes Issued:** ${context?.totalQuotes ?? 0}
-• **Tax Invoices Generated:** ${context?.totalInvoices ?? 0}
-• **Revenue Collected:** ${context?.currency || 'KES'} ${(context?.totalRevenue || 0).toLocaleString()}
-• **Outstanding Receivables:** ${context?.currency || 'KES'} ${(context?.pendingBalance || 0).toLocaleString()}
-
-All system operations and billing ledgers are currently up to date.`;
-  }
-
-  // Searching / Finding Invoices
-  if (p.includes("invoice") && (p.includes("find") || p.includes("search") || p.includes("cant") || p.includes("can't") || p.includes("look") || p.includes("where") || p.includes("missing"))) {
-    return `To locate or search for an invoice:
-1. **Global Search Bar**: Use the search input at the top header (*"Global search by client, inv #, quote #, email..."*) to search across all invoices instantly.
-2. **Invoices Module**: Click **Invoices & Ledger** in the left sidebar menu to view your list of invoices, filter by status (*Paid, Unpaid, Overdue*), or export PDF copies.`;
-  }
-
-  // Searching / Finding Quotes
-  if ((p.includes("quote") || p.includes("proposal") || p.includes("quotation")) && (p.includes("find") || p.includes("search") || p.includes("cant") || p.includes("can't") || p.includes("look") || p.includes("where") || p.includes("missing"))) {
-    return `To locate a quote or proposal:
-1. **Global Search Bar**: Type the quote number (e.g. \`QT-2026-001\`) or client name in the top search bar.
-2. **Quotes Module**: Click **Quotes** in the left sidebar menu to view all active, draft, sent, or converted proposals.`;
-  }
-
-  // Searching / Finding Clients
-  if (p.includes("client") && (p.includes("find") || p.includes("search") || p.includes("cant") || p.includes("can't") || p.includes("look") || p.includes("where") || p.includes("missing"))) {
-    return `To locate a client profile:
-1. Use the **Global Search Bar** at the top header.
-2. Or click **Clients** in the left sidebar menu to view your full address directory, corporate profiles, and billing timelines.`;
-  }
-
-  // Converting Quotes to Invoices
-  if (p.includes("convert") || (p.includes("quote") && p.includes("invoice"))) {
-    return `To convert a Quotation into a Tax Invoice:
-1. Click **Quotes** in the left navigation menu.
-2. Find the target proposal in your quotes list.
-3. Click **Actions** -> select **"Convert to Invoice"**.
-4. Confirm line items & terms, then click **Save & Issue**.`;
-  }
-
-  // Terms & Policy
-  if (p.includes("term") || p.includes("payment term") || p.includes("deposit") || p.includes("policy")) {
-    return `**Standard Recommended Event Terms & Deposit Policies:**
-
-1. **50% Commitment Deposit**: Required at the time of booking to secure event date, equipment, and logistics crew.
-2. **50% Final Settlement**: Payable in full at least 7 days prior to setup and installation.
-3. **Cancellation Policy**: Cancellations within 14 days of the event date forfeit the deposit.
-4. **Site Access**: Client must guarantee ground clearance and 15A power access within 30 metres of setup site.`;
-  }
-
-  return `Hello! I am **Binti**, your assistant for **${context?.companyName || 'Binti Events'}**.
-
-How can I help you with your quotations, billing invoices, client directory, or system settings today?`;
-}
 
 // Executive Business Analysis Endpoint
 router.post('/api/ai/analyze', async (req, res) => {
   try {
     const db = await readDB();
-    const geminiReply = await callGeminiBackendAPI(
+    const result = await callGeminiBackendAPI(
       "Generate an executive financial and operations report with key insights and 2 actionable recommendations.",
       [],
       {
@@ -252,11 +228,11 @@ router.post('/api/ai/analyze', async (req, res) => {
       }
     );
 
-    const analysis = geminiReply || generateBusinessAnalysis(db);
+    const analysis = result.reply || generateBusinessAnalysis(db);
     res.json({ success: true, analysis });
   } catch (error: any) {
     console.error('Error generating business analysis:', error);
-    res.status(500).json({ success: false, message: 'Failed to generate analysis. ' + (error.message || '') });
+    res.status(500).json({ success: false, error: 'Failed to generate analysis. ' + (error.message || '') });
   }
 });
 
@@ -269,7 +245,7 @@ router.post('/api/ai/draft-email', async (req, res) => {
     res.json({ success: true, email });
   } catch (error: any) {
     console.error('Error drafting email:', error);
-    res.status(500).json({ success: false, message: 'Failed to draft email. ' + (error.message || '') });
+    res.status(500).json({ success: false, error: 'Failed to draft email. ' + (error.message || '') });
   }
 });
 
@@ -281,7 +257,7 @@ router.post('/api/ai/recommend-terms', (req, res) => {
     res.json({ success: true, terms });
   } catch (error: any) {
     console.error('Error generating terms:', error);
-    res.status(500).json({ success: false, message: 'Failed to recommend terms. ' + (error.message || '') });
+    res.status(500).json({ success: false, error: 'Failed to recommend terms. ' + (error.message || '') });
   }
 });
 
