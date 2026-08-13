@@ -394,6 +394,17 @@ var import_express2 = require("express");
 var import_fs = __toESM(require("fs"), 1);
 var import_path = __toESM(require("path"), 1);
 var import_mongodb = require("mongodb");
+
+// src/supabase.ts
+var import_supabase_js = require("@supabase/supabase-js");
+var supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+var supabaseKey = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
+var isSupabaseConfigured = Boolean(supabaseUrl && supabaseKey);
+var supabase = isSupabaseConfigured ? (0, import_supabase_js.createClient)(supabaseUrl, supabaseKey, {
+  auth: { persistSession: false }
+}) : null;
+
+// src/db.ts
 var DB_DIR = process.env.DATA_DIR || import_path.default.join(process.cwd(), "data");
 var DB_FILE = import_path.default.join(DB_DIR, "server-db.json");
 if (!import_fs.default.existsSync(DB_DIR)) {
@@ -518,9 +529,8 @@ if (mongoUri) {
     if (cleanDbName) {
       dbName = cleanDbName;
     }
-    console.log(`MongoDB connection string found. Target database: "${dbName}"`);
   } catch (err) {
-    console.error("Failed to parse MONGODB_URI. Falling back to local file database.", err);
+    console.error("Failed to parse MONGODB_URI.", err);
   }
 }
 var connectionPromise = null;
@@ -528,9 +538,8 @@ async function getMongoCollection() {
   if (!mongoClient) return null;
   if (!connectionPromise) {
     connectionPromise = mongoClient.connect().then(() => {
-      console.log("Connected to MongoDB successfully.");
+      console.log("Connected to MongoDB.");
     }).catch((err) => {
-      console.error("MongoDB connection failed. Falling back to local file database.", err);
       mongoClient = null;
     });
   }
@@ -539,6 +548,75 @@ async function getMongoCollection() {
   return mongoClient.db(dbName).collection("app_state");
 }
 async function readDB() {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const [settingsRes, clientsRes, productsRes, quotesRes, invoicesRes] = await Promise.all([
+        supabase.from("company_settings").select("*").limit(1).single(),
+        supabase.from("clients").select("*"),
+        supabase.from("products").select("*"),
+        supabase.from("quotes").select("*"),
+        supabase.from("invoices").select("*")
+      ]);
+      const settings = settingsRes.data ? {
+        companyName: settingsRes.data.company_name || defaultSettings.companyName,
+        taxNumber: settingsRes.data.tax_number || defaultSettings.taxNumber,
+        address: settingsRes.data.address || defaultSettings.address,
+        bankDetails: settingsRes.data.bank_details || defaultSettings.bankDetails,
+        currency: settingsRes.data.currency || defaultSettings.currency,
+        termsTemplate: settingsRes.data.terms_template || defaultSettings.termsTemplate
+      } : defaultSettings;
+      const clients = (clientsRes.data || []).map((c) => ({
+        id: c.id,
+        name: c.name,
+        email: c.email || "",
+        phone: c.phone || "",
+        companyName: c.company_name || "",
+        taxNumber: c.tax_number || "",
+        address: c.address || "",
+        status: c.status || "active",
+        revenue: Number(c.revenue) || 0
+      }));
+      const products = (productsRes.data || []).map((p) => ({
+        id: p.id,
+        name: p.name,
+        category: p.category || "Decor & Event Hire",
+        description: p.description || "",
+        unitPrice: Number(p.price) || 0,
+        unitType: p.unit || "day",
+        taxRate: 16,
+        status: p.status || "active"
+      }));
+      const quotes = (quotesRes.data || []).map((q) => ({
+        id: q.id,
+        quoteNumber: q.quote_number,
+        clientName: q.client_name,
+        grandTotal: Number(q.grand_total) || 0,
+        status: q.status || "draft",
+        items: q.items || [],
+        notes: q.notes || ""
+      }));
+      const invoices = (invoicesRes.data || []).map((inv) => ({
+        id: inv.id,
+        invoiceNumber: inv.invoice_number,
+        clientName: inv.client_name,
+        grandTotal: Number(inv.grand_total) || 0,
+        balanceRemaining: Number(inv.balance_remaining) || 0,
+        status: inv.status || "unpaid",
+        items: inv.items || [],
+        notes: inv.notes || "",
+        payments: []
+      }));
+      return {
+        clients: clients.length > 0 ? clients : defaultClients,
+        products: products.length > 0 ? products : defaultProducts,
+        quotes,
+        invoices,
+        settings
+      };
+    } catch (err) {
+      console.error("Supabase read failed, falling back to secondary DB...", err);
+    }
+  }
   const collection = await getMongoCollection();
   if (collection) {
     try {
@@ -546,23 +624,9 @@ async function readDB() {
       if (document) {
         const { _id, ...state } = document;
         return state;
-      } else {
-        const initialState = {
-          clients: defaultClients,
-          products: defaultProducts,
-          quotes: defaultQuotes,
-          invoices: defaultInvoices,
-          settings: defaultSettings
-        };
-        await collection.updateOne(
-          { _id: "current_state" },
-          { $set: initialState },
-          { upsert: true }
-        );
-        return initialState;
       }
     } catch (err) {
-      console.error("Failed to read from MongoDB. Falling back to local JSON reading.", err);
+      console.error("Failed to read from MongoDB.", err);
     }
   }
   try {
@@ -580,7 +644,6 @@ async function readDB() {
     const data = import_fs.default.readFileSync(DB_FILE, "utf-8");
     return JSON.parse(data);
   } catch (error) {
-    console.error("Error reading database file", error);
     return {
       clients: defaultClients,
       products: defaultProducts,
@@ -591,6 +654,65 @@ async function readDB() {
   }
 }
 async function writeDB(state) {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      if (state.settings) {
+        await supabase.from("company_settings").upsert({
+          company_name: state.settings.companyName,
+          tax_number: state.settings.taxNumber,
+          address: state.settings.address,
+          bank_details: state.settings.bankDetails,
+          currency: state.settings.currency,
+          terms_template: state.settings.termsTemplate
+        });
+      }
+      for (const c of state.clients || []) {
+        await supabase.from("clients").upsert({
+          name: c.name,
+          email: c.email || "",
+          phone: c.phone || "",
+          company_name: c.companyName || "",
+          tax_number: c.taxNumber || "",
+          address: c.address || "",
+          status: c.status || "active",
+          revenue: c.revenue || 0
+        }, { onConflict: "name" });
+      }
+      for (const p of state.products || []) {
+        await supabase.from("products").upsert({
+          name: p.name,
+          category: p.category || "Decor & Event Hire",
+          description: p.description || "",
+          price: p.unitPrice || 0,
+          unit: p.unitType || "day",
+          status: p.status || "active"
+        }, { onConflict: "name" });
+      }
+      for (const q of state.quotes || []) {
+        await supabase.from("quotes").upsert({
+          quote_number: q.quoteNumber,
+          client_name: q.clientName,
+          grand_total: q.grandTotal || 0,
+          status: q.status || "draft",
+          items: q.items || [],
+          notes: q.notes || ""
+        }, { onConflict: "quote_number" });
+      }
+      for (const inv of state.invoices || []) {
+        await supabase.from("invoices").upsert({
+          invoice_number: inv.invoiceNumber,
+          client_name: inv.clientName,
+          grand_total: inv.grandTotal || 0,
+          balance_remaining: inv.balanceRemaining || 0,
+          status: inv.status || "unpaid",
+          items: inv.items || [],
+          notes: inv.notes || ""
+        }, { onConflict: "invoice_number" });
+      }
+    } catch (err) {
+      console.error("Supabase write failed, writing to fallback DB...", err);
+    }
+  }
   const collection = await getMongoCollection();
   if (collection) {
     try {
@@ -599,9 +721,8 @@ async function writeDB(state) {
         { $set: state },
         { upsert: true }
       );
-      return;
     } catch (err) {
-      console.error("Failed to write to MongoDB. Falling back to local JSON writing.", err);
+      console.error("Failed to write to MongoDB.", err);
     }
   }
   try {
@@ -615,7 +736,7 @@ function updateClientStats(state) {
     const clientInvoices = state.invoices.filter((i) => i.clientId === client.id);
     const clientQuotes = state.quotes.filter((q) => q.clientId === client.id);
     const revenue = clientInvoices.reduce((sum, inv) => {
-      const paidSum = inv.payments.reduce((pSum, pm) => pSum + pm.amountPaid, 0);
+      const paidSum = (inv.payments || []).reduce((pSum, pm) => pSum + pm.amountPaid, 0);
       return sum + paidSum;
     }, 0);
     return {
