@@ -70,6 +70,7 @@ Guidelines:
 - Answer the user's specific question directly with exact context numbers where relevant.
 - Do NOT output any horizontal lines, dashes, or divider symbols (---, ***, ___).
 - Keep text clean, elegant, and executive-ready with natural line breaks and spacing.
+- Provide complete, fully fleshed-out answers. Do not cut off mid-sentence or omit details.
 - Provide step-by-step guidance for navigating or completing any task in Binti Events.
 - Keep responses concise, helpful, and professional.`;
 
@@ -80,7 +81,7 @@ Guidelines:
     while (validHistory.length > 0 && validHistory[0].role === "model") {
       validHistory.shift();
     }
-    validHistory.slice(-6).forEach((msg: any) => {
+    validHistory.slice(-10).forEach((msg: any) => {
       contents.push({
         role: msg.role === "model" ? "model" : "user",
         parts: [{ text: msg.content }]
@@ -111,7 +112,7 @@ Guidelines:
             temperature: 0.7,
             topK: 40,
             topP: 0.95,
-            maxOutputTokens: 1024
+            maxOutputTokens: 4096
           }
         })
       });
@@ -177,7 +178,7 @@ router.post('/api/ai/chat', async (req, res) => {
       clientCount: db.clients.length,
       totalQuotes: db.quotes.length,
       totalInvoices: db.invoices.length,
-      totalRevenue: db.invoices.reduce((s, i) => s + i.payments.reduce((p, pm) => p + pm.amountPaid, 0), 0),
+      totalRevenue: db.invoices.reduce((s, i) => s + (i.payments || []).reduce((p, pm) => p + pm.amountPaid, 0), 0),
       pendingBalance: db.invoices.reduce((s, i) => s + i.balanceRemaining, 0),
       categoryBreakdown: categoryBreakdown || 'Tents, Decor, Furniture',
       topClient: topClient ? `${topClient.name} (${db.settings.currency || 'KES'} ${topClient.revenue.toLocaleString()})` : 'N/A'
@@ -271,7 +272,7 @@ router.post('/api/ai/analyze', async (req, res) => {
         clientCount: db.clients.length,
         totalQuotes: db.quotes.length,
         totalInvoices: db.invoices.length,
-        totalRevenue: db.invoices.reduce((s, i) => s + i.payments.reduce((p, pm) => p + pm.amountPaid, 0), 0),
+        totalRevenue: db.invoices.reduce((s, i) => s + (i.payments || []).reduce((p, pm) => p + pm.amountPaid, 0), 0),
         currency: db.settings.currency
       }
     );
