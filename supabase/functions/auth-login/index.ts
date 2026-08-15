@@ -62,6 +62,11 @@ serve(async (req) => {
       .eq('email', sanitizedEmail.toLowerCase())
       .maybeSingle()
 
+    if (queryError) {
+      logError('auth-login', `Database query error: ${queryError.message}`)
+      return errorResponse(`Database error: ${queryError.message}`, 500)
+    }
+
     let user = users as UserAccount | null
 
     // If default admin does not exist yet, bootstrap the admin account
@@ -80,7 +85,9 @@ serve(async (req) => {
         .select()
         .single()
 
-      if (!insertError && newAdmin) {
+      if (insertError) {
+        logError('auth-login', `Admin auto-insert error: ${insertError.message}`)
+      } else if (newAdmin) {
         user = newAdmin as UserAccount
       }
     }
@@ -129,8 +136,8 @@ serve(async (req) => {
       },
       'Login successful'
     )
-  } catch (error) {
+  } catch (error: any) {
     logError('auth-login', error)
-    return errorResponse('Authentication failed', 500)
+    return errorResponse(error?.message || 'Authentication failed', 500)
   }
 })
