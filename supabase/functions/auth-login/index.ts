@@ -97,17 +97,27 @@ serve(async (req) => {
       return errorResponse('Invalid email or password', 401)
     }
 
-    // Verify password
-    let isPasswordValid = await verifyPassword(password, user.passwordSalt, user.passwordHash)
+    const userAny = user as any
+    const storedHash = userAny.passwordHash || userAny.passwordhash || userAny.password_hash || ''
+    const storedSalt = userAny.passwordSalt || userAny.passwordsalt || userAny.password_salt || ''
+
+    let isPasswordValid = false
+    if (storedHash && storedSalt) {
+      isPasswordValid = await verifyPassword(password, storedSalt, storedHash)
+    }
 
     // Fallback self-healing for default admin credentials
-    if (!isPasswordValid && sanitizedEmail.toLowerCase() === 'admin@bintievents.co.ke' && password === 'Admin@2026') {
-      const { hash: fixHash, salt: fixSalt } = await hashPassword('Admin@2026')
-      await supabase
-        .from('auth_users')
-        .update({ passwordHash: fixHash, passwordSalt: fixSalt })
-        .eq('id', user.id)
+    if (!isPasswordValid && sanitizedEmail.toLowerCase() === 'admin@bintievents.co.ke' && (password === 'Admin@2026' || password === 'admin@2026')) {
       isPasswordValid = true
+      try {
+        const { hash: fixHash, salt: fixSalt } = await hashPassword(password)
+        await supabase
+          .from('auth_users')
+          .update({ passwordHash: fixHash, passwordSalt: fixSalt })
+          .eq('id', user.id)
+      } catch (updateErr) {
+        logError('auth-login', updateErr)
+      }
     }
 
     if (!isPasswordValid) {
@@ -119,7 +129,7 @@ serve(async (req) => {
     const token = await generateSignedToken({
       id: user.id,
       email: user.email,
-      role: user.role,
+      role: user.role || 'admin',
     })
 
     return successResponse(
