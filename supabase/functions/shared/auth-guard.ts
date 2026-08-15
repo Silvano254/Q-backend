@@ -67,13 +67,30 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   return btoa(binary)
 }
 
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binary = atob(base64)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i)
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
   }
   return bytes
+}
+
+function parseSalt(saltStr: string): Uint8Array {
+  // If 32 or 64 hex characters
+  if (/^[0-9a-fA-F]{32,64}$/.test(saltStr)) {
+    return hexToBytes(saltStr)
+  }
+  try {
+    return base64ToUint8Array(saltStr)
+  } catch {
+    return new TextEncoder().encode(saltStr)
+  }
 }
 
 /**
@@ -84,7 +101,7 @@ export async function hashPassword(
   salt?: string
 ): Promise<{ hash: string; salt: string }> {
   const saltBytes = salt
-    ? base64ToUint8Array(salt)
+    ? parseSalt(salt)
     : crypto.getRandomValues(new Uint8Array(16))
 
   const encoder = new TextEncoder()
@@ -111,21 +128,50 @@ export async function hashPassword(
 
   const hashBytes = new Uint8Array(derivedBits)
   return {
-    hash: uint8ArrayToBase64(hashBytes),
-    salt: uint8ArrayToBase64(saltBytes),
+    hash: bytesToHex(hashBytes),
+    salt: bytesToHex(saltBytes),
   }
 }
 
 /**
- * Verify password against stored hash
+ * Verify password against stored hash (supports both hex and base64)
  */
 export async function verifyPassword(
   password: string,
   salt: string,
   storedHash: string
 ): Promise<boolean> {
-  const { hash } = await hashPassword(password, salt)
-  return hash === storedHash
+  const saltBytes = parseSalt(salt)
+  const encoder = new TextEncoder()
+  const passwordBytes = encoder.encode(password)
+
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    passwordBytes,
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  )
+
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: saltBytes,
+      iterations: 100000,
+      hash: 'SHA-512',
+    },
+    keyMaterial,
+    512
+  )
+
+  const hashBytes = new Uint8Array(derivedBits)
+  const computedHex = bytesToHex(hashBytes)
+  const computedBase64 = uint8ArrayToBase64(hashBytes)
+
+  return (
+    computedHex.toLowerCase() === storedHash.toLowerCase() ||
+    computedBase64 === storedHash
+  )
 }
 
 /**
