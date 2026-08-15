@@ -35,7 +35,7 @@ export async function sendEmail({ to, subject, text, html }: SendEmailOptions) {
       subject,
       text,
       html
-    });
+    } as any);
     
     if (response.error) {
       console.error("Resend API error:", response.error);

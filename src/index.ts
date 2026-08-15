@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import { requireAuth } from './middleware/auth.js';
 
 import authRoutes from './routes/auth.js';
 import clientRoutes from './routes/clients.js';
@@ -26,6 +27,9 @@ app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 const corsOrigin = process.env.CORS_ORIGIN;
+if (process.env.NODE_ENV === 'production' && !corsOrigin) {
+  throw new Error('CORS_ORIGIN must be configured in production.');
+}
 const allowedOrigins = corsOrigin
   ? (corsOrigin.includes(',') ? corsOrigin.split(',').map(s => s.trim()) : corsOrigin)
   : '*';
@@ -47,7 +51,14 @@ app.use(cors({
   },
   credentials: true
 }));
-app.use(express.json());
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+app.use(express.json({ limit: '256kb' }));
 
 // Incoming Request Logger Middleware
 app.use((req, res, next) => {
@@ -57,10 +68,10 @@ app.use((req, res, next) => {
     console.log(`[HTTP] ${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}ms)`);
     if (req.body && Object.keys(req.body).length > 0) {
       const cleanBody = { ...req.body };
-      if (cleanBody.password) cleanBody.password = '***';
-      if (cleanBody.newPassword) cleanBody.newPassword = '***';
-      if (cleanBody.resendApiKey) cleanBody.resendApiKey = '***';
-      console.log(`  Payload: ${JSON.stringify(cleanBody)}`);
+      for (const key of ['password', 'newPassword', 'otp', 'token', 'authorization', 'resendApiKey']) {
+        if (cleanBody[key]) cleanBody[key] = '***';
+      }
+      console.log(`  Payload fields: ${Object.keys(cleanBody).join(', ')}`);
     }
   });
   next();
@@ -80,6 +91,9 @@ app.use('/api/settings/reset', resetLimiter);
 
 // Routes
 app.use(authRoutes);
+// Auth routes above only expose login and reset initiation. Every business route below
+// requires a valid bearer token.
+app.use('/api', requireAuth);
 app.use(clientRoutes);
 app.use(productRoutes);
 app.use(quoteRoutes);
@@ -89,6 +103,14 @@ app.use(analyticsRoutes);
 app.use(settingsRoutes);
 app.use(emailRoutes);
 app.use(aiRoutes);
+
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err instanceof SyntaxError) {
+    return res.status(400).json({ success: false, message: 'Invalid JSON request body.' });
+  }
+  console.error('Unhandled request error:', err);
+  res.status(500).json({ success: false, message: 'Internal server error.' });
+});
 
 const healthHandler = (req: express.Request, res: express.Response) => {
   res.json({ status: 'ok', service: 'binti-events-backend', timestamp: new Date().toISOString() });

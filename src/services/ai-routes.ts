@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { readDB } from '../db.js';
 import { generateBusinessAnalysis, generateEmailDraft, generateContractTerms } from './ai.js';
+import { validateString, sanitizeString } from '../middleware/validation.js';
 
 const router = Router();
 
@@ -118,7 +119,7 @@ Guidelines:
       });
 
       if (response.ok) {
-        const data = await response.json();
+        const data: any = await response.json();
         const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
         if (text) {
           return { reply: text, statusCode: 200 };
@@ -146,10 +147,23 @@ Guidelines:
 router.post('/api/ai/chat', async (req, res) => {
   try {
     const { prompt, history, context } = req.body;
+    
+    // Validate prompt input
     if (!prompt || typeof prompt !== 'string') {
-      res.status(400).json({ success: false, error: 'Prompt parameter is required.' });
-      return;
+      return res.status(400).json({ success: false, error: 'Prompt parameter is required and must be a string.' });
     }
+
+    const promptValidation = validateString(prompt, {
+      required: true,
+      minLength: 1,
+      maxLength: 5000
+    });
+
+    if (!promptValidation.valid) {
+      return res.status(400).json({ success: false, error: promptValidation.error });
+    }
+
+    const sanitizedPrompt = sanitizeString(prompt);
 
     const db = await readDB();
 
@@ -184,7 +198,7 @@ router.post('/api/ai/chat', async (req, res) => {
       topClient: topClient ? `${topClient.name} (${db.settings.currency || 'KES'} ${topClient.revenue.toLocaleString()})` : 'N/A'
     };
 
-    const result = await callGeminiBackendAPI(prompt, history, enrichedContext);
+    const result = await callGeminiBackendAPI(sanitizedPrompt, history, enrichedContext);
     
     if (result.reply) {
       res.status(200).json({ success: true, reply: result.reply });
@@ -192,7 +206,7 @@ router.post('/api/ai/chat', async (req, res) => {
     }
 
     // Smart fallback if API key is initializing
-    const fallbackText = getSmartQueryFallback(prompt, enrichedContext);
+    const fallbackText = getSmartQueryFallback(sanitizedPrompt, enrichedContext);
     res.json({ success: true, reply: fallbackText });
   } catch (error: any) {
     console.error('Error handling AI chat:', error);

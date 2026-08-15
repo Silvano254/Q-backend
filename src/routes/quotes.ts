@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { readDB, writeDB, updateClientStats } from '../db.js';
 import { Quote } from '../types.js';
+import { requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -9,7 +10,7 @@ router.get('/api/quotes', async (req, res) => {
   res.json(db.quotes);
 });
 
-router.post('/api/quotes', async (req, res) => {
+router.post('/api/quotes', requireRole('admin', 'manager'), async (req, res) => {
   const db = await readDB();
   const quoteData = req.body;
   
@@ -33,7 +34,7 @@ router.post('/api/quotes', async (req, res) => {
   res.status(201).json(newQuote);
 });
 
-router.put('/api/quotes/:id', async (req, res) => {
+router.put('/api/quotes/:id', requireRole('admin', 'manager'), async (req, res) => {
   const db = await readDB();
   const index = db.quotes.findIndex(q => q.id === req.params.id);
   if (index !== -1) {
@@ -46,7 +47,7 @@ router.put('/api/quotes/:id', async (req, res) => {
   }
 });
 
-router.delete('/api/quotes/:id', async (req, res) => {
+router.delete('/api/quotes/:id', requireRole('admin'), async (req, res) => {
   const db = await readDB();
   db.quotes = db.quotes.filter(q => q.id !== req.params.id);
   updateClientStats(db);

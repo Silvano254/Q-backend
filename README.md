@@ -12,7 +12,7 @@ The backend service for Binti Events Corporate Suite is a Node.js / Express REST
 
 - **Runtime**: Node.js 18+
 - **Framework**: Express.js (ES modules / CommonJS bundled output)
-- **Database**: MongoDB / Local JSON Database Storage (`DATA_DIR`)
+- **Database**: Supabase PostgreSQL in production; local JSON storage only for development
 - **Bundler**: esbuild
 - **AI Processing**: Google Gemini 3.5+ REST API (Google AI Studio)
 - **Email Service**: Resend API
@@ -52,8 +52,14 @@ NODE_ENV=production
 # Allowed CORS Origin(s) (Comma-separated list or frontend URL)
 CORS_ORIGIN=http://localhost:5173, https://q-frontend-weld.vercel.app
 
-# Storage Directory Path (Optional: defaults to ./data or mounted Render disk e.g. /var/data)
-DATA_DIR=./data
+# Supabase service role credentials (server only; never expose these to a frontend)
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+
+# Required authentication secrets
+JWT_SECRET=generate_a_long_random_secret
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=generate_a_long_unique_password
 
 # Google Gemini API Key (Configured on Render for production Binti AI processing)
 GEMINI_API_KEY=your_gemini_api_key_here
@@ -62,8 +68,6 @@ GEMINI_API_KEY=your_gemini_api_key_here
 RESEND_API_KEY=re_123456789
 RESEND_FROM_EMAIL=Binti Events <onboarding@resend.dev>
 
-# MongoDB Connection String (Will override file storage in production)
-MONGODB_URI=mongodb://localhost:27017/binti-events
 ```
 
 ---
@@ -90,6 +94,14 @@ This compiles `src/index.ts` into a single production bundle at `dist/server.cjs
 ```bash
 npm start
 ```
+
+## Security and deployment requirements
+
+- Run `supabase/schema.sql` before deploying. It removes anonymous database policies and creates the API state table.
+- Configure `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` in Render. The service refuses to start without the authentication variables.
+- All `/api` business endpoints require `Authorization: Bearer <token>` from `POST /api/auth/login`.
+- Local JSON state is disabled when `NODE_ENV=production`; production database failures are returned rather than silently falling back to a second store.
+- To migrate an existing local state file, run `npx tsx scripts/migrate-mongo-to-supabase.ts` with `DATA_FILE` set when it is not `data/server-db.json`.
 
 ---
 

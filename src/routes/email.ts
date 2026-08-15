@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { sendEmail } from '../services/email.js';
+import { requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
-router.post('/api/email/send', async (req, res) => {
+router.post('/api/email/send', requireRole('admin', 'manager'), async (req, res) => {
   const { to, subject, body } = req.body;
 
   if (!to || !subject || !body) {

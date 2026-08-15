@@ -17,6 +17,7 @@ build/
 
 # Databases and storage
 data/
+supabase/.temp/
 *.db
 *.sqlite
 

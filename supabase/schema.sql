@@ -95,21 +95,30 @@ ALTER TABLE quotes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
 
--- Allow Service Role and Public Anon Key access for backend API operations
-CREATE POLICY "Allow anon select company_settings" ON company_settings FOR SELECT USING (true);
-CREATE POLICY "Allow anon all company_settings" ON company_settings FOR ALL USING (true);
+-- Never grant anonymous table access. The service-role key is held only by the API
+-- server and bypasses RLS; browser clients must use the API.
+DROP POLICY IF EXISTS "Allow anon select company_settings" ON company_settings;
+DROP POLICY IF EXISTS "Allow anon all company_settings" ON company_settings;
+DROP POLICY IF EXISTS "Allow anon select clients" ON clients;
+DROP POLICY IF EXISTS "Allow anon all clients" ON clients;
+DROP POLICY IF EXISTS "Allow anon select products" ON products;
+DROP POLICY IF EXISTS "Allow anon all products" ON products;
+DROP POLICY IF EXISTS "Allow anon select quotes" ON quotes;
+DROP POLICY IF EXISTS "Allow anon all quotes" ON quotes;
+DROP POLICY IF EXISTS "Allow anon select invoices" ON invoices;
+DROP POLICY IF EXISTS "Allow anon all invoices" ON invoices;
+DROP POLICY IF EXISTS "Allow anon select payments" ON payments;
+DROP POLICY IF EXISTS "Allow anon all payments" ON payments;
 
-CREATE POLICY "Allow anon select clients" ON clients FOR SELECT USING (true);
-CREATE POLICY "Allow anon all clients" ON clients FOR ALL USING (true);
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon, authenticated;
 
-CREATE POLICY "Allow anon select products" ON products FOR SELECT USING (true);
-CREATE POLICY "Allow anon all products" ON products FOR ALL USING (true);
-
-CREATE POLICY "Allow anon select quotes" ON quotes FOR SELECT USING (true);
-CREATE POLICY "Allow anon all quotes" ON quotes FOR ALL USING (true);
-
-CREATE POLICY "Allow anon select invoices" ON invoices FOR SELECT USING (true);
-CREATE POLICY "Allow anon all invoices" ON invoices FOR ALL USING (true);
-
-CREATE POLICY "Allow anon select payments" ON payments FOR SELECT USING (true);
-CREATE POLICY "Allow anon all payments" ON payments FOR ALL USING (true);
+-- The API stores one validated application-state document. This preserves the
+-- current REST contract without losing invoice payments or client metadata.
+CREATE TABLE IF NOT EXISTS app_state (
+    id TEXT PRIMARY KEY,
+    state JSONB NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CONSTRAINT app_state_singleton CHECK (id = 'current_state')
+);
+ALTER TABLE app_state ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON app_state FROM anon, authenticated;

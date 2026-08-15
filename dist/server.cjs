@@ -31,57 +31,14 @@ var import_cors = __toESM(require("cors"), 1);
 var import_express = require("express");
 var import_crypto = __toESM(require("crypto"), 1);
 var import_express_rate_limit = __toESM(require("express-rate-limit"), 1);
-
-// src/services/email.ts
-var import_resend = require("resend");
-var apiKey = process.env.RESEND_API_KEY || "";
-var fromEmail = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
-var resend = null;
-if (apiKey && apiKey !== "re_123456789") {
-  resend = new import_resend.Resend(apiKey);
-}
-async function sendEmail({ to, subject, text, html }) {
-  console.log(`Sending email to ${to} with subject "${subject}"...`);
-  if (!resend) {
-    console.warn(`Resend email service not configured (missing or default RESEND_API_KEY).`);
-    console.log(`[SIMULATED EMAIL]
-To: ${to}
-From: ${fromEmail}
-Subject: ${subject}
-Content:
-${text || html}
-[END SIMULATED EMAIL]`);
-    return {
-      success: true,
-      simulated: true,
-      message: "Email sending simulated successfully."
-    };
-  }
-  try {
-    const response = await resend.emails.send({
-      from: fromEmail,
-      to,
-      subject,
-      text,
-      html
-    });
-    if (response.error) {
-      console.error("Resend API error:", response.error);
-      throw new Error(response.error.message || "Failed to send email via Resend.");
-    }
-    return {
-      success: true,
-      data: response.data
-    };
-  } catch (error) {
-    console.error("Failed to send email via Resend:", error);
-    throw new Error(error.message || "Unknown email delivery error.");
-  }
-}
-
-// src/routes/auth.ts
 var router = (0, import_express.Router)();
-var JWT_SECRET = process.env.JWT_SECRET || "binti_events_secure_signing_key_2026";
+var JWT_SECRET = process.env.JWT_SECRET;
+var ADMIN_EMAIL = process.env.ADMIN_EMAIL?.toLowerCase().trim();
+var ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+if (!JWT_SECRET || !ADMIN_EMAIL || !ADMIN_PASSWORD) {
+  throw new Error("JWT_SECRET, ADMIN_EMAIL, and ADMIN_PASSWORD must be configured.");
+}
+var signingSecret = JWT_SECRET;
 function hashPassword(password, salt = import_crypto.default.randomBytes(16).toString("hex")) {
   const hash = import_crypto.default.pbkdf2Sync(password, salt, 1e5, 64, "sha512").toString("hex");
   return { hash, salt };
@@ -96,7 +53,7 @@ function verifyPassword(password, salt, storedHash) {
 function generateSignedToken(payload) {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 24 * 60 * 60 * 1e3 })).toString("base64url");
-  const signature = import_crypto.default.createHmac("sha256", JWT_SECRET).update(`${header}.${body}`).digest("base64url");
+  const signature = import_crypto.default.createHmac("sha256", signingSecret).update(`${header}.${body}`).digest("base64url");
   return `${header}.${body}.${signature}`;
 }
 function verifySignedToken(token) {
@@ -104,7 +61,7 @@ function verifySignedToken(token) {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
     const [header, body, signature] = parts;
-    const expectedSignature = import_crypto.default.createHmac("sha256", JWT_SECRET).update(`${header}.${body}`).digest("base64url");
+    const expectedSignature = import_crypto.default.createHmac("sha256", signingSecret).update(`${header}.${body}`).digest("base64url");
     if (!import_crypto.default.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) return null;
     const parsedBody = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
     if (parsedBody.exp && Date.now() > parsedBody.exp) return null;
@@ -113,28 +70,17 @@ function verifySignedToken(token) {
     return null;
   }
 }
-var adminPass = hashPassword("binti2026");
-var managerPass = hashPassword("manager2026");
-var defaultAdminEmail = process.env.ADMIN_EMAIL || "silvanootieno44@gmail.com";
+var adminPass = hashPassword(ADMIN_PASSWORD);
 var users = {
-  [defaultAdminEmail.toLowerCase()]: {
+  [ADMIN_EMAIL]: {
     id: "admin",
-    email: defaultAdminEmail,
+    email: ADMIN_EMAIL,
     name: "Admin Binti",
     role: "admin",
     passwordHash: adminPass.hash,
     passwordSalt: adminPass.salt,
     biometricRegistered: true,
     biometricCredentialId: "bio_credential_admin_binti"
-  },
-  "silvanootieno44@gmail.com": {
-    id: "admin",
-    email: defaultAdminEmail,
-    name: "Admin Binti",
-    role: "admin",
-    passwordHash: adminPass.hash,
-    passwordSalt: adminPass.salt,
-    biometricRegistered: true
   }
 };
 function findUser(emailOrId) {
@@ -142,7 +88,7 @@ function findUser(emailOrId) {
   const key = emailOrId.toLowerCase().trim();
   if (users[key]) return users[key];
   return Object.values(users).find(
-    (u) => u.email.toLowerCase() === key || u.id.toLowerCase() === key || u.role === "admin" && (key === "admin" || key === "silvanootieno44@gmail.com" || key === "billing@bintievents.co.ke" || key === "admin@bintievents.co.ke")
+    (u) => u.email.toLowerCase() === key || u.id.toLowerCase() === key
   );
 }
 var authLimiter = (0, import_express_rate_limit.default)({
@@ -191,201 +137,44 @@ router.post("/api/auth/login", authLimiter, (req, res) => {
   }
 });
 router.post("/api/auth/request-reset", authLimiter, (req, res) => {
-  const { email } = req.body;
-  const user = findUser(email);
-  if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: "No account found matching this corporate email address."
-    });
-  }
-  const otp = Math.floor(1e5 + Math.random() * 9e5).toString();
-  user.resetOtp = otp;
-  user.resetOtpExpiry = Date.now() + 15 * 60 * 1e3;
-  if (process.env.NODE_ENV !== "production") {
-    console.log(`[DEV ONLY] Security OTP generated for ${user.email}: ${otp}`);
-  }
-  sendEmail({
-    to: user.email,
-    subject: "Binti Events - Password Recovery OTP",
-    text: `Hello ${user.name},
-
-You requested a passcode reset for your Binti Events account.
-Your 6-digit security recovery PIN is: ${otp}
-
-This PIN is valid for 15 minutes.
-
-If you did not request this, please ignore this email.`,
-    html: `
-      <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
-        <h2>Password Recovery</h2>
-        <p>Hello <strong>${user.name}</strong>,</p>
-        <p>You requested a passcode reset for your Binti Events corporate account.</p>
-        <div style="background-color: #f3f4f6; border-radius: 8px; padding: 15px; margin: 20px 0; font-size: 24px; font-weight: bold; text-align: center; letter-spacing: 4px; color: #6B46C1;">
-          ${otp}
-        </div>
-        <p>This security recovery PIN is valid for <strong>15 minutes</strong>.</p>
-        <p>If you did not request this reset, please ignore this email or contact system administration.</p>
-        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
-        <p style="font-size: 11px; color: #666;">Binti Events Management Portal</p>
-      </div>
-    `
-  }).catch((err) => {
-    console.error("Error sending OTP email:", err);
-  });
-  res.json({
-    success: true,
-    message: `Security recovery PIN sent to ${user.email}. Please check your inbox.`,
-    expiresInSeconds: 900
-  });
+  res.status(501).json({ success: false, message: "Password resets must be handled by the configured identity provider." });
 });
-router.post("/api/auth/reset-password", authLimiter, (req, res) => {
-  const { email, otp, newPassword } = req.body;
-  const user = findUser(email);
-  if (!user) {
-    return res.status(404).json({ success: false, message: "Account not found." });
-  }
-  if (!user.resetOtp || user.resetOtp !== otp) {
-    return res.status(400).json({ success: false, message: "Invalid or expired 6-digit security PIN." });
-  }
-  if (user.resetOtpExpiry && Date.now() > user.resetOtpExpiry) {
-    return res.status(400).json({ success: false, message: "Security PIN has expired. Please request a new one." });
-  }
-  if (!newPassword || newPassword.length < 4) {
-    return res.status(400).json({ success: false, message: "New passcode must be at least 4 characters long." });
-  }
-  const { hash, salt } = hashPassword(newPassword);
-  user.passwordHash = hash;
-  user.passwordSalt = salt;
-  user.resetOtp = void 0;
-  user.resetOtpExpiry = void 0;
-  res.json({
-    success: true,
-    message: "Passcode successfully reset! You can now log in with your new passcode."
-  });
+router.post("/api/auth/reset-password", authLimiter, (_req, res) => {
+  res.status(501).json({ success: false, message: "Password resets must be handled by the configured identity provider." });
 });
-router.post("/api/auth/register-biometric", (req, res) => {
-  const { email, credentialId } = req.body;
-  const user = findUser(email);
-  if (!user) {
-    return res.status(404).json({ success: false, message: "User account not found." });
-  }
-  const generatedId = credentialId || "bio_credential_" + Date.now().toString();
-  user.biometricRegistered = true;
-  user.biometricCredentialId = generatedId;
-  res.json({
-    success: true,
-    message: "Fingerprint & Biometric Passkey registered successfully!",
-    credentialId: generatedId
-  });
+router.post("/api/auth/register-biometric", (_req, res) => {
+  res.status(501).json({ success: false, message: "WebAuthn is not configured for this service." });
 });
-router.post("/api/auth/biometric-login", authLimiter, (req, res) => {
-  const { email } = req.body;
-  let user = findUser(email);
-  if (!user) {
-    user = Object.values(users).find((u) => u.biometricRegistered);
-  }
-  if (!user) {
-    return res.status(401).json({
-      success: false,
-      message: "No registered biometric profile found on this system. Please log in with password first to register your fingerprint."
-    });
-  }
-  const token = generateSignedToken({ id: user.id, email: user.email, role: user.role });
-  res.json({
-    success: true,
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      biometricRegistered: true
-    },
-    token
-  });
+router.post("/api/auth/biometric-login", authLimiter, (_req, res) => {
+  res.status(501).json({ success: false, message: "WebAuthn is not configured for this service." });
 });
-router.post("/api/auth/request-profile-update-otp", authLimiter, (req, res) => {
-  const { currentEmail } = req.body;
-  const user = findUser(currentEmail);
-  if (!user) {
-    return res.status(404).json({ success: false, message: "User account not found." });
-  }
-  const otp = Math.floor(1e5 + Math.random() * 9e5).toString();
-  user.resetOtp = otp;
-  user.resetOtpExpiry = Date.now() + 15 * 60 * 1e3;
-  if (process.env.NODE_ENV !== "production") {
-    console.log(`[DEV ONLY] Profile Update OTP generated for ${user.email}: ${otp}`);
-  }
-  sendEmail({
-    to: user.email,
-    subject: "Binti Events - Verification Code for Profile Changes",
-    text: `Hello ${user.name},
-
-You requested to update your email or passcode on your Binti Events account.
-Your 6-digit verification code is: ${otp}
-
-If you did not request this, please secure your account.`,
-    html: `
-      <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
-        <h2>Security Verification Code</h2>
-        <p>Hello <strong>${user.name}</strong>,</p>
-        <p>You requested to update your corporate email address or passcode on the Binti Events dashboard.</p>
-        <div style="background-color: #f3f4f6; border-radius: 8px; padding: 15px; margin: 20px 0; font-size: 24px; font-weight: bold; text-align: center; letter-spacing: 4px; color: #6B46C1;">
-          ${otp}
-        </div>
-        <p>Enter this verification PIN in your settings panel to authorize the changes.</p>
-        <p>If you did not initiate this, please secure your login immediately.</p>
-      </div>
-    `
-  }).catch((err) => {
-    console.error("Error sending profile update OTP email:", err);
-  });
-  res.json({
-    success: true,
-    message: `Verification PIN sent to original email ${user.email}.`
-  });
+router.post("/api/auth/request-profile-update-otp", authLimiter, (_req, res) => {
+  res.status(501).json({ success: false, message: "Profile updates must be handled by the configured identity provider." });
 });
-router.post("/api/auth/verify-profile-update", authLimiter, (req, res) => {
-  const { currentEmail, otp, newEmail, newPasscode } = req.body;
-  const user = findUser(currentEmail);
-  if (!user) {
-    return res.status(404).json({ success: false, message: "Original account not found." });
-  }
-  if (!user.resetOtp || user.resetOtp !== otp) {
-    return res.status(400).json({ success: false, message: "Invalid or expired verification PIN." });
-  }
-  if (user.resetOtpExpiry && Date.now() > user.resetOtpExpiry) {
-    return res.status(400).json({ success: false, message: "Verification PIN has expired." });
-  }
-  user.resetOtp = void 0;
-  user.resetOtpExpiry = void 0;
-  if (newPasscode && newPasscode.length >= 4) {
-    const { hash, salt } = hashPassword(newPasscode);
-    user.passwordHash = hash;
-    user.passwordSalt = salt;
-  }
-  if (newEmail && newEmail.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
-    const oldEmail = user.email.toLowerCase().trim();
-    const freshEmail = newEmail.toLowerCase().trim();
-    user.email = freshEmail;
-    users[freshEmail] = user;
-    if (users[oldEmail] && oldEmail !== "admin") {
-      delete users[oldEmail];
-    }
-  }
-  res.json({
-    success: true,
-    message: "Security profile updated successfully!",
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      biometricRegistered: user.biometricRegistered
-    }
-  });
+router.post("/api/auth/verify-profile-update", authLimiter, (_req, res) => {
+  res.status(501).json({ success: false, message: "Profile updates must be handled by the configured identity provider." });
 });
 var auth_default = router;
+
+// src/middleware/auth.ts
+function requireAuth(req, res, next) {
+  const header = req.header("authorization");
+  const token = header?.startsWith("Bearer ") ? header.slice(7) : void 0;
+  const identity = token ? verifySignedToken(token) : null;
+  if (!identity || identity.role !== "admin" && identity.role !== "manager") {
+    return res.status(401).json({ success: false, message: "Authentication is required." });
+  }
+  req.auth = identity;
+  next();
+}
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.auth || !roles.includes(req.auth.role)) {
+      return res.status(403).json({ success: false, message: "Insufficient permissions." });
+    }
+    next();
+  };
+}
 
 // src/routes/clients.ts
 var import_express2 = require("express");
@@ -393,12 +182,11 @@ var import_express2 = require("express");
 // src/db.ts
 var import_fs = __toESM(require("fs"), 1);
 var import_path = __toESM(require("path"), 1);
-var import_mongodb = require("mongodb");
 
 // src/supabase.ts
 var import_supabase_js = require("@supabase/supabase-js");
-var supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
-var supabaseKey = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
+var supabaseUrl = process.env.SUPABASE_URL || "";
+var supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 var isSupabaseConfigured = Boolean(supabaseUrl && supabaseKey);
 var supabase = isSupabaseConfigured ? (0, import_supabase_js.createClient)(supabaseUrl, supabaseKey, {
   auth: { persistSession: false }
@@ -407,9 +195,7 @@ var supabase = isSupabaseConfigured ? (0, import_supabase_js.createClient)(supab
 // src/db.ts
 var DB_DIR = process.env.DATA_DIR || import_path.default.join(process.cwd(), "data");
 var DB_FILE = import_path.default.join(DB_DIR, "server-db.json");
-if (!import_fs.default.existsSync(DB_DIR)) {
-  import_fs.default.mkdirSync(DB_DIR, { recursive: true });
-}
+var STATE_ID = "current_state";
 var defaultSettings = {
   companyName: "Binti Events",
   email: "billing@bintievents.co.ke",
@@ -417,334 +203,85 @@ var defaultSettings = {
   address: "Sura Office Suites, Nairobi, Kenya",
   taxNumber: "P051234567A",
   currency: "KES",
-  invoiceFormat: "INV-2026-{SEQ}",
-  quoteFormat: "QT-2026-{SEQ}",
-  termsTemplate: "1. Payments are non-refundable for cancellations within 14 days of the event.\n2. 50% deposit required to book, with balance due 7 days prior to event setup.\n3. Broken or damaged hire equipment will be charged at replacement cost.",
-  emailTemplate: "Dear {CLIENT_NAME},\n\nPlease find attached {TYPE} {NUMBER} from Binti Events.\n\nTotal Amount: {CURRENCY} {AMOUNT}\nDue Date: {DUE_DATE}\n\nThank you for choosing Binti Events to curate your luxury moments.\n\nWarm regards,\nBinti Events Billing Team"
+  invoiceFormat: "INV-{YYYY}-{SEQ}",
+  quoteFormat: "QT-{YYYY}-{SEQ}",
+  termsTemplate: "50% deposit is required to confirm the booking. The balance is due 7 days before setup.",
+  emailTemplate: "Dear {CLIENT_NAME},\n\nPlease find attached {TYPE} {NUMBER} from Binti Events.\n\nThank you."
 };
 var defaultClients = [];
 var defaultProducts = [
-  {
-    id: "p1",
-    name: "Premium Stretch Tent (15m x 30m)",
-    description: "Elegant waterproof, sand-colored heavy-duty stretch tent with double peaks.",
-    category: "Tents",
-    unitType: "Day",
-    unitPrice: 55e3,
-    taxRate: 16,
-    status: "active"
-  },
-  {
-    id: "p2",
-    name: "Luxury Pergola Wooden Structure",
-    description: "3m x 6m wooden pergola structure, complete with elegant white fabric draping.",
-    category: "Structures",
-    unitType: "Setup",
-    unitPrice: 85e3,
-    taxRate: 16,
-    status: "active"
-  },
-  {
-    id: "p3",
-    name: "Cheese Tent (Semi-open)",
-    description: "Modern, stylish cheese tent for garden parties and brand activations.",
-    category: "Tents",
-    unitType: "Day",
-    unitPrice: 35e3,
-    taxRate: 16,
-    status: "active"
-  },
-  {
-    id: "p4",
-    name: "Ambient Fairy Lights & Uplighting Pack",
-    description: "Warm glow LED up-lighting and 100m fairy lights including setup and technical support.",
-    category: "Lighting",
-    unitType: "Event",
-    unitPrice: 2e4,
-    taxRate: 16,
-    status: "active"
-  },
-  {
-    id: "p5",
-    name: "Chiavari Luxury Chairs (Gold/White)",
-    description: "Standard premium Chiavari wooden chairs with cushion pads.",
-    category: "Furniture",
-    unitType: "Piece",
-    unitPrice: 350,
-    taxRate: 16,
-    status: "active"
-  },
-  {
-    id: "p6",
-    name: "Full Tabletop Decor Styling Pack",
-    description: "Includes glass underplates, gold cutlery, fabric napkins, crystal glassware, and table runner.",
-    category: "Decor",
-    unitType: "Guest",
-    unitPrice: 800,
-    taxRate: 16,
-    status: "active"
-  },
-  {
-    id: "p7",
-    name: "Floral Arch & Backdrop Design",
-    description: "Bespoke fresh floral installations matching custom color palettes.",
-    category: "Decor",
-    unitType: "Setup",
-    unitPrice: 75e3,
-    taxRate: 16,
-    status: "active"
-  },
-  {
-    id: "p8",
-    name: "Transport & Event Logistics Support",
-    description: "Nairobi area heavy truck transport, layout design, offloading, and rigging labor.",
-    category: "Logistics",
-    unitType: "Flat Rate",
-    unitPrice: 3e4,
-    taxRate: 16,
-    status: "active"
-  },
-  {
-    id: "p9",
-    name: "Creative Event Design & Consultation",
-    description: "3D venue mapping, event coordination meetings, and dedicated site manager.",
-    category: "Consultation",
-    unitType: "Hour",
-    unitPrice: 15e3,
-    taxRate: 16,
-    status: "active"
-  }
+  { id: "p1", name: "Premium Stretch Tent (15m x 30m)", description: "Waterproof stretch tent.", category: "Tents", unitType: "Day", unitPrice: 55e3, taxRate: 16, status: "active" },
+  { id: "p2", name: "Luxury Pergola Wooden Structure", description: "Wooden pergola with draping.", category: "Structures", unitType: "Setup", unitPrice: 85e3, taxRate: 16, status: "active" },
+  { id: "p3", name: "Ambient Fairy Lights & Uplighting Pack", description: "LED uplighting and fairy lights.", category: "Lighting", unitType: "Event", unitPrice: 2e4, taxRate: 16, status: "active" }
 ];
 var defaultQuotes = [];
 var defaultInvoices = [];
-var mongoUri = process.env.MONGODB_URI;
-var mongoClient = null;
-var dbName = "binti-events";
-if (mongoUri) {
-  try {
-    mongoClient = new import_mongodb.MongoClient(mongoUri);
-    const urlParts = mongoUri.split("/");
-    const lastPart = urlParts[urlParts.length - 1];
-    const cleanDbName = lastPart.split("?")[0];
-    if (cleanDbName) {
-      dbName = cleanDbName;
-    }
-  } catch (err) {
-    console.error("Failed to parse MONGODB_URI.", err);
-  }
+function initialState() {
+  return {
+    clients: [...defaultClients],
+    products: [...defaultProducts],
+    quotes: [...defaultQuotes],
+    invoices: [...defaultInvoices],
+    settings: { ...defaultSettings }
+  };
 }
-var connectionPromise = null;
-async function getMongoCollection() {
-  if (!mongoClient) return null;
-  if (!connectionPromise) {
-    connectionPromise = mongoClient.connect().then(() => {
-      console.log("Connected to MongoDB.");
-    }).catch((err) => {
-      mongoClient = null;
-    });
-  }
-  await connectionPromise;
-  if (!mongoClient) return null;
-  return mongoClient.db(dbName).collection("app_state");
+function normalizeState(value) {
+  const state = value;
+  return {
+    clients: Array.isArray(state?.clients) ? state.clients : [],
+    products: Array.isArray(state?.products) && state.products.length ? state.products : [...defaultProducts],
+    quotes: Array.isArray(state?.quotes) ? state.quotes : [],
+    invoices: Array.isArray(state?.invoices) ? state.invoices : [],
+    settings: { ...defaultSettings, ...state?.settings || {} }
+  };
+}
+function requireStorageDirectory() {
+  if (!import_fs.default.existsSync(DB_DIR)) import_fs.default.mkdirSync(DB_DIR, { recursive: true });
 }
 async function readDB() {
   if (isSupabaseConfigured && supabase) {
-    try {
-      const [settingsRes, clientsRes, productsRes, quotesRes, invoicesRes] = await Promise.all([
-        supabase.from("company_settings").select("*").limit(1).single(),
-        supabase.from("clients").select("*"),
-        supabase.from("products").select("*"),
-        supabase.from("quotes").select("*"),
-        supabase.from("invoices").select("*")
-      ]);
-      const settings = settingsRes.data ? {
-        companyName: settingsRes.data.company_name || defaultSettings.companyName,
-        taxNumber: settingsRes.data.tax_number || defaultSettings.taxNumber,
-        address: settingsRes.data.address || defaultSettings.address,
-        bankDetails: settingsRes.data.bank_details || defaultSettings.bankDetails,
-        currency: settingsRes.data.currency || defaultSettings.currency,
-        termsTemplate: settingsRes.data.terms_template || defaultSettings.termsTemplate
-      } : defaultSettings;
-      const clients = (clientsRes.data || []).map((c) => ({
-        id: c.id,
-        name: c.name,
-        email: c.email || "",
-        phone: c.phone || "",
-        companyName: c.company_name || "",
-        taxNumber: c.tax_number || "",
-        address: c.address || "",
-        status: c.status || "active",
-        revenue: Number(c.revenue) || 0
-      }));
-      const products = (productsRes.data || []).map((p) => ({
-        id: p.id,
-        name: p.name,
-        category: p.category || "Decor & Event Hire",
-        description: p.description || "",
-        unitPrice: Number(p.price) || 0,
-        unitType: p.unit || "day",
-        taxRate: 16,
-        status: p.status || "active"
-      }));
-      const quotes = (quotesRes.data || []).map((q) => ({
-        id: q.id,
-        quoteNumber: q.quote_number,
-        clientName: q.client_name,
-        grandTotal: Number(q.grand_total) || 0,
-        status: q.status || "draft",
-        items: q.items || [],
-        notes: q.notes || ""
-      }));
-      const invoices = (invoicesRes.data || []).map((inv) => ({
-        id: inv.id,
-        invoiceNumber: inv.invoice_number,
-        clientName: inv.client_name,
-        grandTotal: Number(inv.grand_total) || 0,
-        balanceRemaining: Number(inv.balance_remaining) || 0,
-        status: inv.status || "unpaid",
-        items: inv.items || [],
-        notes: inv.notes || "",
-        payments: []
-      }));
-      return {
-        clients: clients.length > 0 ? clients : defaultClients,
-        products: products.length > 0 ? products : defaultProducts,
-        quotes,
-        invoices,
-        settings
-      };
-    } catch (err) {
-      console.error("Supabase read failed, falling back to secondary DB...", err);
-    }
+    const { data, error } = await supabase.from("app_state").select("state").eq("id", STATE_ID).maybeSingle();
+    if (error) throw new Error(`Supabase read failed: ${error.message}`);
+    return data ? normalizeState(data.state) : initialState();
   }
-  const collection = await getMongoCollection();
-  if (collection) {
-    try {
-      const document = await collection.findOne({ _id: "current_state" });
-      if (document) {
-        const { _id, ...state } = document;
-        return state;
-      }
-    } catch (err) {
-      console.error("Failed to read from MongoDB.", err);
-    }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production.");
   }
-  try {
-    if (!import_fs.default.existsSync(DB_FILE)) {
-      const initialState = {
-        clients: defaultClients,
-        products: defaultProducts,
-        quotes: defaultQuotes,
-        invoices: defaultInvoices,
-        settings: defaultSettings
-      };
-      import_fs.default.writeFileSync(DB_FILE, JSON.stringify(initialState, null, 2));
-      return initialState;
-    }
-    const data = import_fs.default.readFileSync(DB_FILE, "utf-8");
-    return JSON.parse(data);
-  } catch (error) {
-    return {
-      clients: defaultClients,
-      products: defaultProducts,
-      quotes: defaultQuotes,
-      invoices: defaultInvoices,
-      settings: defaultSettings
-    };
+  requireStorageDirectory();
+  if (!import_fs.default.existsSync(DB_FILE)) {
+    const state = initialState();
+    import_fs.default.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), { mode: 384 });
+    return state;
   }
+  return normalizeState(JSON.parse(import_fs.default.readFileSync(DB_FILE, "utf8")));
 }
 async function writeDB(state) {
+  const normalized = normalizeState(state);
   if (isSupabaseConfigured && supabase) {
-    try {
-      if (state.settings) {
-        await supabase.from("company_settings").upsert({
-          company_name: state.settings.companyName,
-          tax_number: state.settings.taxNumber,
-          address: state.settings.address,
-          bank_details: state.settings.bankDetails,
-          currency: state.settings.currency,
-          terms_template: state.settings.termsTemplate
-        });
-      }
-      for (const c of state.clients || []) {
-        await supabase.from("clients").upsert({
-          name: c.name,
-          email: c.email || "",
-          phone: c.phone || "",
-          company_name: c.companyName || "",
-          tax_number: c.taxNumber || "",
-          address: c.address || "",
-          status: c.status || "active",
-          revenue: c.revenue || 0
-        }, { onConflict: "name" });
-      }
-      for (const p of state.products || []) {
-        await supabase.from("products").upsert({
-          name: p.name,
-          category: p.category || "Decor & Event Hire",
-          description: p.description || "",
-          price: p.unitPrice || 0,
-          unit: p.unitType || "day",
-          status: p.status || "active"
-        }, { onConflict: "name" });
-      }
-      for (const q of state.quotes || []) {
-        await supabase.from("quotes").upsert({
-          quote_number: q.quoteNumber,
-          client_name: q.clientName,
-          grand_total: q.grandTotal || 0,
-          status: q.status || "draft",
-          items: q.items || [],
-          notes: q.notes || ""
-        }, { onConflict: "quote_number" });
-      }
-      for (const inv of state.invoices || []) {
-        await supabase.from("invoices").upsert({
-          invoice_number: inv.invoiceNumber,
-          client_name: inv.clientName,
-          grand_total: inv.grandTotal || 0,
-          balance_remaining: inv.balanceRemaining || 0,
-          status: inv.status || "unpaid",
-          items: inv.items || [],
-          notes: inv.notes || ""
-        }, { onConflict: "invoice_number" });
-      }
-    } catch (err) {
-      console.error("Supabase write failed, writing to fallback DB...", err);
-    }
+    const { error } = await supabase.from("app_state").upsert(
+      { id: STATE_ID, state: normalized, updated_at: (/* @__PURE__ */ new Date()).toISOString() },
+      { onConflict: "id" }
+    );
+    if (error) throw new Error(`Supabase write failed: ${error.message}`);
+    return;
   }
-  const collection = await getMongoCollection();
-  if (collection) {
-    try {
-      await collection.updateOne(
-        { _id: "current_state" },
-        { $set: state },
-        { upsert: true }
-      );
-    } catch (err) {
-      console.error("Failed to write to MongoDB.", err);
-    }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production.");
   }
-  try {
-    import_fs.default.writeFileSync(DB_FILE, JSON.stringify(state, null, 2));
-  } catch (error) {
-    console.error("Error writing database file", error);
-  }
+  requireStorageDirectory();
+  import_fs.default.writeFileSync(DB_FILE, JSON.stringify(normalized, null, 2), { mode: 384 });
 }
 function updateClientStats(state) {
   state.clients = state.clients.map((client) => {
-    const clientInvoices = state.invoices.filter((i) => i.clientId === client.id);
-    const clientQuotes = state.quotes.filter((q) => q.clientId === client.id);
-    const revenue = clientInvoices.reduce((sum, inv) => {
-      const paidSum = (inv.payments || []).reduce((pSum, pm) => pSum + pm.amountPaid, 0);
-      return sum + paidSum;
-    }, 0);
+    const clientInvoices = state.invoices.filter((invoice) => invoice.clientId === client.id);
+    const clientQuotes = state.quotes.filter((quote) => quote.clientId === client.id);
+    const revenue = clientInvoices.reduce((sum, invoice) => sum + (invoice.payments || []).reduce((paymentSum, payment) => paymentSum + Number(payment.amountPaid || 0), 0), 0);
     return {
       ...client,
       revenue,
       quotesCount: clientQuotes.length,
       invoicesCount: clientInvoices.length,
-      lastActivity: (/* @__PURE__ */ new Date()).toISOString().split("T")[0]
+      lastActivity: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)
     };
   });
 }
@@ -755,7 +292,7 @@ router2.get("/api/clients", async (req, res) => {
   const db = await readDB();
   res.json(db.clients);
 });
-router2.post("/api/clients", async (req, res) => {
+router2.post("/api/clients", requireRole("admin", "manager"), async (req, res) => {
   const db = await readDB();
   const newClient = {
     ...req.body,
@@ -769,7 +306,7 @@ router2.post("/api/clients", async (req, res) => {
   await writeDB(db);
   res.status(201).json(newClient);
 });
-router2.put("/api/clients/:id", async (req, res) => {
+router2.put("/api/clients/:id", requireRole("admin", "manager"), async (req, res) => {
   const db = await readDB();
   const index = db.clients.findIndex((c) => c.id === req.params.id);
   if (index !== -1) {
@@ -780,7 +317,7 @@ router2.put("/api/clients/:id", async (req, res) => {
     res.status(404).json({ message: "Client not found" });
   }
 });
-router2.delete("/api/clients/:id", async (req, res) => {
+router2.delete("/api/clients/:id", requireRole("admin"), async (req, res) => {
   const db = await readDB();
   db.clients = db.clients.filter((c) => c.id !== req.params.id);
   await writeDB(db);
@@ -795,7 +332,7 @@ router3.get("/api/products", async (req, res) => {
   const db = await readDB();
   res.json(db.products);
 });
-router3.post("/api/products", async (req, res) => {
+router3.post("/api/products", requireRole("admin", "manager"), async (req, res) => {
   const db = await readDB();
   const newProduct = {
     ...req.body,
@@ -805,7 +342,7 @@ router3.post("/api/products", async (req, res) => {
   await writeDB(db);
   res.status(201).json(newProduct);
 });
-router3.put("/api/products/:id", async (req, res) => {
+router3.put("/api/products/:id", requireRole("admin", "manager"), async (req, res) => {
   const db = await readDB();
   const index = db.products.findIndex((p) => p.id === req.params.id);
   if (index !== -1) {
@@ -816,7 +353,7 @@ router3.put("/api/products/:id", async (req, res) => {
     res.status(404).json({ message: "Product/service not found" });
   }
 });
-router3.delete("/api/products/:id", async (req, res) => {
+router3.delete("/api/products/:id", requireRole("admin"), async (req, res) => {
   const db = await readDB();
   db.products = db.products.filter((p) => p.id !== req.params.id);
   await writeDB(db);
@@ -831,7 +368,7 @@ router4.get("/api/quotes", async (req, res) => {
   const db = await readDB();
   res.json(db.quotes);
 });
-router4.post("/api/quotes", async (req, res) => {
+router4.post("/api/quotes", requireRole("admin", "manager"), async (req, res) => {
   const db = await readDB();
   const quoteData = req.body;
   let qNum = quoteData.quoteNumber;
@@ -851,7 +388,7 @@ router4.post("/api/quotes", async (req, res) => {
   await writeDB(db);
   res.status(201).json(newQuote);
 });
-router4.put("/api/quotes/:id", async (req, res) => {
+router4.put("/api/quotes/:id", requireRole("admin", "manager"), async (req, res) => {
   const db = await readDB();
   const index = db.quotes.findIndex((q) => q.id === req.params.id);
   if (index !== -1) {
@@ -863,7 +400,7 @@ router4.put("/api/quotes/:id", async (req, res) => {
     res.status(404).json({ message: "Quote not found" });
   }
 });
-router4.delete("/api/quotes/:id", async (req, res) => {
+router4.delete("/api/quotes/:id", requireRole("admin"), async (req, res) => {
   const db = await readDB();
   db.quotes = db.quotes.filter((q) => q.id !== req.params.id);
   updateClientStats(db);
@@ -879,7 +416,7 @@ router5.get("/api/invoices", async (req, res) => {
   const db = await readDB();
   res.json(db.invoices);
 });
-router5.post("/api/invoices", async (req, res) => {
+router5.post("/api/invoices", requireRole("admin", "manager"), async (req, res) => {
   const db = await readDB();
   const invoiceData = req.body;
   let iNum = invoiceData.invoiceNumber;
@@ -890,6 +427,9 @@ router5.post("/api/invoices", async (req, res) => {
   }
   const paidSum = (invoiceData.payments || []).reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
   const grandTotal = Number(invoiceData.grandTotal) || 0;
+  if (!Number.isFinite(grandTotal) || grandTotal < 0 || paidSum < 0) {
+    return res.status(400).json({ message: "Invoice totals and payments must be non-negative numbers." });
+  }
   const balanceRemaining = Math.max(0, grandTotal - paidSum);
   let initialStatus = invoiceData.status || "draft";
   if (initialStatus !== "cancelled" && initialStatus !== "draft") {
@@ -922,7 +462,7 @@ router5.post("/api/invoices", async (req, res) => {
   await writeDB(db);
   res.status(201).json(newInvoice);
 });
-router5.put("/api/invoices/:id", async (req, res) => {
+router5.put("/api/invoices/:id", requireRole("admin", "manager"), async (req, res) => {
   const db = await readDB();
   const index = db.invoices.findIndex((inv) => inv.id === req.params.id);
   if (index !== -1) {
@@ -947,18 +487,22 @@ router5.put("/api/invoices/:id", async (req, res) => {
     res.status(404).json({ message: "Invoice not found" });
   }
 });
-router5.post("/api/invoices/:id/payments", async (req, res) => {
+router5.post("/api/invoices/:id/payments", requireRole("admin", "manager"), async (req, res) => {
   const db = await readDB();
   const invoiceIndex = db.invoices.findIndex((inv) => inv.id === req.params.id);
   if (invoiceIndex !== -1) {
     const invoice = db.invoices[invoiceIndex];
     const paymentData = req.body;
+    const amountPaid = Number(paymentData.amountPaid);
+    if (!Number.isFinite(amountPaid) || amountPaid <= 0 || amountPaid > invoice.balanceRemaining) {
+      return res.status(400).json({ message: "Payment amount must be positive and cannot exceed the outstanding balance." });
+    }
     const newPayment = {
       id: "pm_" + Date.now().toString(),
       paymentDate: paymentData.paymentDate || (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
       paymentMethod: paymentData.paymentMethod || "cash",
       referenceNumber: paymentData.referenceNumber || "",
-      amountPaid: Number(paymentData.amountPaid),
+      amountPaid,
       notes: paymentData.notes || ""
     };
     invoice.payments = invoice.payments || [];
@@ -978,7 +522,7 @@ router5.post("/api/invoices/:id/payments", async (req, res) => {
     res.status(404).json({ message: "Invoice not found" });
   }
 });
-router5.delete("/api/invoices/:id", async (req, res) => {
+router5.delete("/api/invoices/:id", requireRole("admin"), async (req, res) => {
   const db = await readDB();
   db.invoices = db.invoices.filter((inv) => inv.id !== req.params.id);
   updateClientStats(db);
@@ -1055,29 +599,78 @@ router8.get("/api/settings", async (req, res) => {
   const db = await readDB();
   res.json(db.settings);
 });
-router8.put("/api/settings", async (req, res) => {
+router8.put("/api/settings", requireRole("admin"), async (req, res) => {
   const db = await readDB();
   db.settings = { ...db.settings, ...req.body };
   await writeDB(db);
   res.json(db.settings);
 });
-router8.post("/api/settings/reset", async (req, res) => {
-  const initialState = {
+router8.post("/api/settings/reset", requireRole("admin"), async (req, res) => {
+  const initialState2 = {
     clients: defaultClients,
     products: defaultProducts,
     quotes: defaultQuotes,
     invoices: defaultInvoices,
     settings: defaultSettings
   };
-  await writeDB(initialState);
+  await writeDB(initialState2);
   res.json({ success: true, message: "Database reset successfully." });
 });
 var settings_default = router8;
 
 // src/routes/email.ts
 var import_express9 = require("express");
+
+// src/services/email.ts
+var import_resend = require("resend");
+var apiKey = process.env.RESEND_API_KEY || "";
+var fromEmail = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
+var resend = null;
+if (apiKey && apiKey !== "re_123456789") {
+  resend = new import_resend.Resend(apiKey);
+}
+async function sendEmail({ to, subject, text, html }) {
+  console.log(`Sending email to ${to} with subject "${subject}"...`);
+  if (!resend) {
+    console.warn(`Resend email service not configured (missing or default RESEND_API_KEY).`);
+    console.log(`[SIMULATED EMAIL]
+To: ${to}
+From: ${fromEmail}
+Subject: ${subject}
+Content:
+${text || html}
+[END SIMULATED EMAIL]`);
+    return {
+      success: true,
+      simulated: true,
+      message: "Email sending simulated successfully."
+    };
+  }
+  try {
+    const response = await resend.emails.send({
+      from: fromEmail,
+      to,
+      subject,
+      text,
+      html
+    });
+    if (response.error) {
+      console.error("Resend API error:", response.error);
+      throw new Error(response.error.message || "Failed to send email via Resend.");
+    }
+    return {
+      success: true,
+      data: response.data
+    };
+  } catch (error) {
+    console.error("Failed to send email via Resend:", error);
+    throw new Error(error.message || "Unknown email delivery error.");
+  }
+}
+
+// src/routes/email.ts
 var router9 = (0, import_express9.Router)();
-router9.post("/api/email/send", async (req, res) => {
+router9.post("/api/email/send", requireRole("admin", "manager"), async (req, res) => {
   const { to, subject, body } = req.body;
   if (!to || !subject || !body) {
     return res.status(400).json({ success: false, message: "Missing required fields: to, subject, body." });
@@ -1607,6 +1200,9 @@ var app = (0, import_express11.default)();
 app.set("trust proxy", 1);
 var PORT = process.env.PORT || 3e3;
 var corsOrigin = process.env.CORS_ORIGIN;
+if (process.env.NODE_ENV === "production" && !corsOrigin) {
+  throw new Error("CORS_ORIGIN must be configured in production.");
+}
 var allowedOrigins = corsOrigin ? corsOrigin.includes(",") ? corsOrigin.split(",").map((s) => s.trim()) : corsOrigin : "*";
 app.use((0, import_cors.default)({
   origin: (origin, callback) => {
@@ -1623,7 +1219,14 @@ app.use((0, import_cors.default)({
   },
   credentials: true
 }));
-app.use(import_express11.default.json());
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
+app.use(import_express11.default.json({ limit: "256kb" }));
 app.use((req, res, next) => {
   const start = Date.now();
   res.on("finish", () => {
@@ -1631,10 +1234,10 @@ app.use((req, res, next) => {
     console.log(`[HTTP] ${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}ms)`);
     if (req.body && Object.keys(req.body).length > 0) {
       const cleanBody = { ...req.body };
-      if (cleanBody.password) cleanBody.password = "***";
-      if (cleanBody.newPassword) cleanBody.newPassword = "***";
-      if (cleanBody.resendApiKey) cleanBody.resendApiKey = "***";
-      console.log(`  Payload: ${JSON.stringify(cleanBody)}`);
+      for (const key of ["password", "newPassword", "otp", "token", "authorization", "resendApiKey"]) {
+        if (cleanBody[key]) cleanBody[key] = "***";
+      }
+      console.log(`  Payload fields: ${Object.keys(cleanBody).join(", ")}`);
     }
   });
   next();
@@ -1648,6 +1251,7 @@ app.use("/api/ai", aiLimiter);
 app.use("/api/email", emailLimiter);
 app.use("/api/settings/reset", resetLimiter);
 app.use(auth_default);
+app.use("/api", requireAuth);
 app.use(clients_default);
 app.use(products_default);
 app.use(quotes_default);
@@ -1657,6 +1261,13 @@ app.use(analytics_default);
 app.use(settings_default);
 app.use(email_default);
 app.use(ai_routes_default);
+app.use((err, _req, res, _next) => {
+  if (err instanceof SyntaxError) {
+    return res.status(400).json({ success: false, message: "Invalid JSON request body." });
+  }
+  console.error("Unhandled request error:", err);
+  res.status(500).json({ success: false, message: "Internal server error." });
+});
 var healthHandler = (req, res) => {
   res.json({ status: "ok", service: "binti-events-backend", timestamp: (/* @__PURE__ */ new Date()).toISOString() });
 };

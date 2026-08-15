@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { readDB, writeDB, updateClientStats } from '../db.js';
 import { Invoice, PaymentRecord } from '../types.js';
+import { requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -9,7 +10,7 @@ router.get('/api/invoices', async (req, res) => {
   res.json(db.invoices);
 });
 
-router.post('/api/invoices', async (req, res) => {
+router.post('/api/invoices', requireRole('admin', 'manager'), async (req, res) => {
   const db = await readDB();
   const invoiceData = req.body;
 
@@ -22,6 +23,9 @@ router.post('/api/invoices', async (req, res) => {
 
   const paidSum = (invoiceData.payments || []).reduce((sum: number, p: PaymentRecord) => sum + (Number(p.amountPaid) || 0), 0);
   const grandTotal = Number(invoiceData.grandTotal) || 0;
+  if (!Number.isFinite(grandTotal) || grandTotal < 0 || paidSum < 0) {
+    return res.status(400).json({ message: 'Invoice totals and payments must be non-negative numbers.' });
+  }
   const balanceRemaining = Math.max(0, grandTotal - paidSum);
 
   let initialStatus = invoiceData.status || "draft";
@@ -60,7 +64,7 @@ router.post('/api/invoices', async (req, res) => {
   res.status(201).json(newInvoice);
 });
 
-router.put('/api/invoices/:id', async (req, res) => {
+router.put('/api/invoices/:id', requireRole('admin', 'manager'), async (req, res) => {
   const db = await readDB();
   const index = db.invoices.findIndex(inv => inv.id === req.params.id);
   if (index !== -1) {
@@ -89,20 +93,24 @@ router.put('/api/invoices/:id', async (req, res) => {
   }
 });
 
-router.post('/api/invoices/:id/payments', async (req, res) => {
+router.post('/api/invoices/:id/payments', requireRole('admin', 'manager'), async (req, res) => {
   const db = await readDB();
   const invoiceIndex = db.invoices.findIndex(inv => inv.id === req.params.id);
   
   if (invoiceIndex !== -1) {
     const invoice = db.invoices[invoiceIndex];
     const paymentData = req.body;
+    const amountPaid = Number(paymentData.amountPaid);
+    if (!Number.isFinite(amountPaid) || amountPaid <= 0 || amountPaid > invoice.balanceRemaining) {
+      return res.status(400).json({ message: 'Payment amount must be positive and cannot exceed the outstanding balance.' });
+    }
     
     const newPayment: PaymentRecord = {
       id: "pm_" + Date.now().toString(),
       paymentDate: paymentData.paymentDate || new Date().toISOString().split("T")[0],
       paymentMethod: paymentData.paymentMethod || "cash",
       referenceNumber: paymentData.referenceNumber || "",
-      amountPaid: Number(paymentData.amountPaid),
+      amountPaid,
       notes: paymentData.notes || ""
     };
 
@@ -127,7 +135,7 @@ router.post('/api/invoices/:id/payments', async (req, res) => {
   }
 });
 
-router.delete('/api/invoices/:id', async (req, res) => {
+router.delete('/api/invoices/:id', requireRole('admin'), async (req, res) => {
   const db = await readDB();
   db.invoices = db.invoices.filter(inv => inv.id !== req.params.id);
   updateClientStats(db);

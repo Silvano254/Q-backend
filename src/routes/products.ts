@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { readDB, writeDB } from '../db.js';
 import { ProductService } from '../types.js';
+import { requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -9,7 +10,7 @@ router.get('/api/products', async (req, res) => {
   res.json(db.products);
 });
 
-router.post('/api/products', async (req, res) => {
+router.post('/api/products', requireRole('admin', 'manager'), async (req, res) => {
   const db = await readDB();
   const newProduct: ProductService = {
     ...req.body,
@@ -20,7 +21,7 @@ router.post('/api/products', async (req, res) => {
   res.status(201).json(newProduct);
 });
 
-router.put('/api/products/:id', async (req, res) => {
+router.put('/api/products/:id', requireRole('admin', 'manager'), async (req, res) => {
   const db = await readDB();
   const index = db.products.findIndex(p => p.id === req.params.id);
   if (index !== -1) {
@@ -32,7 +33,7 @@ router.put('/api/products/:id', async (req, res) => {
   }
 });
 
-router.delete('/api/products/:id', async (req, res) => {
+router.delete('/api/products/:id', requireRole('admin'), async (req, res) => {
   const db = await readDB();
   db.products = db.products.filter(p => p.id !== req.params.id);
   await writeDB(db);

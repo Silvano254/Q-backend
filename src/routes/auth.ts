@@ -2,6 +2,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 import { sendEmail } from '../services/email.js';
+import { validateEmail, validatePassword, sanitizeString } from '../middleware/validation.js';
 
 const router = Router();
 
@@ -56,32 +57,41 @@ interface UserAccount {
   biometricCredentialId?: string;
 }
 
-const adminPass = hashPassword("binti2026");
-const managerPass = hashPassword("manager2026");
+/**
+ * SECURITY: Initialize user store from environment variables.
+ * Admin credentials MUST be provided via ADMIN_EMAIL and ADMIN_PASSWORD environment variables.
+ * For development, use .env file. For production, use Render/hosting platform env settings.
+ * Do NOT hardcode credentials.
+ */
+function initializeUsers(): Record<string, UserAccount> {
+  const adminEmail = process.env.ADMIN_EMAIL;
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  const adminName = process.env.ADMIN_NAME || "Admin";
 
-const defaultAdminEmail = process.env.ADMIN_EMAIL || "silvanootieno44@gmail.com";
-
-const users: Record<string, UserAccount> = {
-  [defaultAdminEmail.toLowerCase()]: {
-    id: "admin",
-    email: defaultAdminEmail,
-    name: "Admin Binti",
-    role: "admin",
-    passwordHash: adminPass.hash,
-    passwordSalt: adminPass.salt,
-    biometricRegistered: true,
-    biometricCredentialId: "bio_credential_admin_binti"
-  },
-  "silvanootieno44@gmail.com": {
-    id: "admin",
-    email: defaultAdminEmail,
-    name: "Admin Binti",
-    role: "admin",
-    passwordHash: adminPass.hash,
-    passwordSalt: adminPass.salt,
-    biometricRegistered: true
+  if (!adminEmail || !adminPassword) {
+    console.warn(
+      "⚠️  WARNING: Admin credentials not configured. User authentication disabled.\n" +
+      "Please set ADMIN_EMAIL and ADMIN_PASSWORD environment variables.\n" +
+      "Development users can be added to .env file. Production requires Render environment settings."
+    );
+    return {};
   }
-};
+
+  const { hash, salt } = hashPassword(adminPassword);
+  return {
+    [adminEmail.toLowerCase()]: {
+      id: "admin",
+      email: adminEmail,
+      name: adminName,
+      role: "admin",
+      passwordHash: hash,
+      passwordSalt: salt,
+      biometricRegistered: false
+    }
+  };
+}
+
+const users: Record<string, UserAccount> = initializeUsers();
 
 export function findUser(emailOrId?: string): UserAccount | undefined {
   if (!emailOrId) return undefined;
@@ -127,9 +137,22 @@ router.post('/api/auth/verify', (req, res) => {
 // Standard Password Login
 router.post('/api/auth/login', authLimiter, (req, res) => {
   const { email, password } = req.body;
-  const user = findUser(email);
 
-  if (user && verifyPassword(password || "", user.passwordSalt, user.passwordHash)) {
+  // Validate input
+  const emailValidation = validateEmail(email);
+  if (!emailValidation.valid) {
+    return res.status(400).json({ success: false, message: emailValidation.error });
+  }
+
+  const passwordValidation = validatePassword(password);
+  if (!passwordValidation.valid) {
+    return res.status(400).json({ success: false, message: passwordValidation.error });
+  }
+
+  const sanitizedEmail = sanitizeString(email);
+  const user = findUser(sanitizedEmail);
+
+  if (user && verifyPassword(password, user.passwordSalt, user.passwordHash)) {
     const token = generateSignedToken({ id: user.id, email: user.email, role: user.role });
     res.json({
       success: true,
@@ -310,7 +333,7 @@ router.post('/api/auth/request-profile-update-otp', authLimiter, (req, res) => {
       <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
         <h2>Security Verification Code</h2>
         <p>Hello <strong>${user.name}</strong>,</p>
-        <p>You requested to update your corporate email address or passcode on the Binti Events dashboard.</p>
+        <p>You requested to update your email address or passcode on the Binti Events dashboard.</p>
         <div style="background-color: #f3f4f6; border-radius: 8px; padding: 15px; margin: 20px 0; font-size: 24px; font-weight: bold; text-align: center; letter-spacing: 4px; color: #6B46C1;">
           ${otp}
         </div>

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { readDB, writeDB } from '../db.js';
 import { Client } from '../types.js';
+import { requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -9,7 +10,7 @@ router.get('/api/clients', async (req, res) => {
   res.json(db.clients);
 });
 
-router.post('/api/clients', async (req, res) => {
+router.post('/api/clients', requireRole('admin', 'manager'), async (req, res) => {
   const db = await readDB();
   const newClient: Client = {
     ...req.body,
@@ -24,7 +25,7 @@ router.post('/api/clients', async (req, res) => {
   res.status(201).json(newClient);
 });
 
-router.put('/api/clients/:id', async (req, res) => {
+router.put('/api/clients/:id', requireRole('admin', 'manager'), async (req, res) => {
   const db = await readDB();
   const index = db.clients.findIndex(c => c.id === req.params.id);
   if (index !== -1) {
@@ -36,7 +37,7 @@ router.put('/api/clients/:id', async (req, res) => {
   }
 });
 
-router.delete('/api/clients/:id', async (req, res) => {
+router.delete('/api/clients/:id', requireRole('admin'), async (req, res) => {
   const db = await readDB();
   db.clients = db.clients.filter(c => c.id !== req.params.id);
   await writeDB(db);
