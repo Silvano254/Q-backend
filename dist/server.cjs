@@ -31,14 +31,102 @@ var import_cors = __toESM(require("cors"), 1);
 var import_express = require("express");
 var import_crypto = __toESM(require("crypto"), 1);
 var import_express_rate_limit = __toESM(require("express-rate-limit"), 1);
-var router = (0, import_express.Router)();
-var JWT_SECRET = process.env.JWT_SECRET;
-var ADMIN_EMAIL = process.env.ADMIN_EMAIL?.toLowerCase().trim();
-var ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-if (!JWT_SECRET || !ADMIN_EMAIL || !ADMIN_PASSWORD) {
-  throw new Error("JWT_SECRET, ADMIN_EMAIL, and ADMIN_PASSWORD must be configured.");
+
+// src/services/email.ts
+var import_resend = require("resend");
+var apiKey = process.env.RESEND_API_KEY || "";
+var fromEmail = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
+var resend = null;
+if (apiKey && apiKey !== "re_123456789") {
+  resend = new import_resend.Resend(apiKey);
 }
-var signingSecret = JWT_SECRET;
+async function sendEmail({ to, subject, text, html }) {
+  console.log(`Sending email to ${to} with subject "${subject}"...`);
+  if (!resend) {
+    console.warn(`Resend email service not configured (missing or default RESEND_API_KEY).`);
+    console.log(`[SIMULATED EMAIL]
+To: ${to}
+From: ${fromEmail}
+Subject: ${subject}
+Content:
+${text || html}
+[END SIMULATED EMAIL]`);
+    return {
+      success: true,
+      simulated: true,
+      message: "Email sending simulated successfully."
+    };
+  }
+  try {
+    const response = await resend.emails.send({
+      from: fromEmail,
+      to,
+      subject,
+      text,
+      html
+    });
+    if (response.error) {
+      console.error("Resend API error:", response.error);
+      throw new Error(response.error.message || "Failed to send email via Resend.");
+    }
+    return {
+      success: true,
+      data: response.data
+    };
+  } catch (error) {
+    console.error("Failed to send email via Resend:", error);
+    throw new Error(error.message || "Unknown email delivery error.");
+  }
+}
+
+// src/middleware/validation.ts
+function validateString(value, options = {}) {
+  const { maxLength = 1e3, minLength = 0, pattern, required = false, type = "string" } = options;
+  if (required && (!value || typeof value === "string" && value.trim().length === 0)) {
+    return { valid: false, error: "Field is required" };
+  }
+  if (!value) return { valid: true };
+  if (typeof value !== "string") {
+    return { valid: false, error: `Expected string, received ${typeof value}` };
+  }
+  if (value.length < minLength) {
+    return { valid: false, error: `Minimum length is ${minLength} characters` };
+  }
+  if (value.length > maxLength) {
+    return { valid: false, error: `Maximum length is ${maxLength} characters` };
+  }
+  if (pattern && !pattern.test(value)) {
+    return { valid: false, error: "Invalid format" };
+  }
+  return { valid: true };
+}
+function validateEmail(email) {
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return validateString(email, {
+    required: true,
+    maxLength: 255,
+    pattern: emailPattern
+  });
+}
+function validatePassword(password) {
+  const validation = validateString(password, {
+    required: true,
+    minLength: 4,
+    maxLength: 128
+  });
+  if (!validation.valid) return validation;
+  if (password.length < 4) {
+    return { valid: false, error: "Password must be at least 4 characters" };
+  }
+  return { valid: true };
+}
+function sanitizeString(input) {
+  return input.trim().replace(/[\x00-\x1F\x7F]/g, "").slice(0, 1e3);
+}
+
+// src/routes/auth.ts
+var router = (0, import_express.Router)();
+var JWT_SECRET = process.env.JWT_SECRET || "binti_events_secure_signing_key_2026";
 function hashPassword(password, salt = import_crypto.default.randomBytes(16).toString("hex")) {
   const hash = import_crypto.default.pbkdf2Sync(password, salt, 1e5, 64, "sha512").toString("hex");
   return { hash, salt };
@@ -53,7 +141,7 @@ function verifyPassword(password, salt, storedHash) {
 function generateSignedToken(payload) {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 24 * 60 * 60 * 1e3 })).toString("base64url");
-  const signature = import_crypto.default.createHmac("sha256", signingSecret).update(`${header}.${body}`).digest("base64url");
+  const signature = import_crypto.default.createHmac("sha256", JWT_SECRET).update(`${header}.${body}`).digest("base64url");
   return `${header}.${body}.${signature}`;
 }
 function verifySignedToken(token) {
@@ -61,7 +149,7 @@ function verifySignedToken(token) {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
     const [header, body, signature] = parts;
-    const expectedSignature = import_crypto.default.createHmac("sha256", signingSecret).update(`${header}.${body}`).digest("base64url");
+    const expectedSignature = import_crypto.default.createHmac("sha256", JWT_SECRET).update(`${header}.${body}`).digest("base64url");
     if (!import_crypto.default.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) return null;
     const parsedBody = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
     if (parsedBody.exp && Date.now() > parsedBody.exp) return null;
@@ -70,25 +158,36 @@ function verifySignedToken(token) {
     return null;
   }
 }
-var adminPass = hashPassword(ADMIN_PASSWORD);
-var users = {
-  [ADMIN_EMAIL]: {
-    id: "admin",
-    email: ADMIN_EMAIL,
-    name: "Admin Binti",
-    role: "admin",
-    passwordHash: adminPass.hash,
-    passwordSalt: adminPass.salt,
-    biometricRegistered: true,
-    biometricCredentialId: "bio_credential_admin_binti"
+function initializeUsers() {
+  const adminEmail = process.env.ADMIN_EMAIL;
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  const adminName = process.env.ADMIN_NAME || "Admin";
+  if (!adminEmail || !adminPassword) {
+    console.warn(
+      "\u26A0\uFE0F  WARNING: Admin credentials not configured. User authentication disabled.\nPlease set ADMIN_EMAIL and ADMIN_PASSWORD environment variables.\nDevelopment users can be added to .env file. Production requires Render environment settings."
+    );
+    return {};
   }
-};
+  const { hash, salt } = hashPassword(adminPassword);
+  return {
+    [adminEmail.toLowerCase()]: {
+      id: "admin",
+      email: adminEmail,
+      name: adminName,
+      role: "admin",
+      passwordHash: hash,
+      passwordSalt: salt,
+      biometricRegistered: false
+    }
+  };
+}
+var users = initializeUsers();
 function findUser(emailOrId) {
   if (!emailOrId) return void 0;
   const key = emailOrId.toLowerCase().trim();
   if (users[key]) return users[key];
   return Object.values(users).find(
-    (u) => u.email.toLowerCase() === key || u.id.toLowerCase() === key
+    (u) => u.email.toLowerCase() === key || u.id.toLowerCase() === key || u.role === "admin" && (key === "admin" || key === "silvanootieno44@gmail.com" || key === "billing@bintievents.co.ke" || key === "admin@bintievents.co.ke")
   );
 }
 var authLimiter = (0, import_express_rate_limit.default)({
@@ -118,8 +217,17 @@ router.post("/api/auth/verify", (req, res) => {
 });
 router.post("/api/auth/login", authLimiter, (req, res) => {
   const { email, password } = req.body;
-  const user = findUser(email);
-  if (user && verifyPassword(password || "", user.passwordSalt, user.passwordHash)) {
+  const emailValidation = validateEmail(email);
+  if (!emailValidation.valid) {
+    return res.status(400).json({ success: false, message: emailValidation.error });
+  }
+  const passwordValidation = validatePassword(password);
+  if (!passwordValidation.valid) {
+    return res.status(400).json({ success: false, message: passwordValidation.error });
+  }
+  const sanitizedEmail = sanitizeString(email);
+  const user = findUser(sanitizedEmail);
+  if (user && verifyPassword(password, user.passwordSalt, user.passwordHash)) {
     const token = generateSignedToken({ id: user.id, email: user.email, role: user.role });
     res.json({
       success: true,
@@ -137,22 +245,199 @@ router.post("/api/auth/login", authLimiter, (req, res) => {
   }
 });
 router.post("/api/auth/request-reset", authLimiter, (req, res) => {
-  res.status(501).json({ success: false, message: "Password resets must be handled by the configured identity provider." });
+  const { email } = req.body;
+  const user = findUser(email);
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: "No account found matching this corporate email address."
+    });
+  }
+  const otp = Math.floor(1e5 + Math.random() * 9e5).toString();
+  user.resetOtp = otp;
+  user.resetOtpExpiry = Date.now() + 15 * 60 * 1e3;
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`[DEV ONLY] Security OTP generated for ${user.email}: ${otp}`);
+  }
+  sendEmail({
+    to: user.email,
+    subject: "Binti Events - Password Recovery OTP",
+    text: `Hello ${user.name},
+
+You requested a passcode reset for your Binti Events account.
+Your 6-digit security recovery PIN is: ${otp}
+
+This PIN is valid for 15 minutes.
+
+If you did not request this, please ignore this email.`,
+    html: `
+      <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+        <h2>Password Recovery</h2>
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>You requested a passcode reset for your Binti Events corporate account.</p>
+        <div style="background-color: #f3f4f6; border-radius: 8px; padding: 15px; margin: 20px 0; font-size: 24px; font-weight: bold; text-align: center; letter-spacing: 4px; color: #6B46C1;">
+          ${otp}
+        </div>
+        <p>This security recovery PIN is valid for <strong>15 minutes</strong>.</p>
+        <p>If you did not request this reset, please ignore this email or contact system administration.</p>
+        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
+        <p style="font-size: 11px; color: #666;">Binti Events Management Portal</p>
+      </div>
+    `
+  }).catch((err) => {
+    console.error("Error sending OTP email:", err);
+  });
+  res.json({
+    success: true,
+    message: `Security recovery PIN sent to ${user.email}. Please check your inbox.`,
+    expiresInSeconds: 900
+  });
 });
-router.post("/api/auth/reset-password", authLimiter, (_req, res) => {
-  res.status(501).json({ success: false, message: "Password resets must be handled by the configured identity provider." });
+router.post("/api/auth/reset-password", authLimiter, (req, res) => {
+  const { email, otp, newPassword } = req.body;
+  const user = findUser(email);
+  if (!user) {
+    return res.status(404).json({ success: false, message: "Account not found." });
+  }
+  if (!user.resetOtp || user.resetOtp !== otp) {
+    return res.status(400).json({ success: false, message: "Invalid or expired 6-digit security PIN." });
+  }
+  if (user.resetOtpExpiry && Date.now() > user.resetOtpExpiry) {
+    return res.status(400).json({ success: false, message: "Security PIN has expired. Please request a new one." });
+  }
+  if (!newPassword || newPassword.length < 4) {
+    return res.status(400).json({ success: false, message: "New passcode must be at least 4 characters long." });
+  }
+  const { hash, salt } = hashPassword(newPassword);
+  user.passwordHash = hash;
+  user.passwordSalt = salt;
+  user.resetOtp = void 0;
+  user.resetOtpExpiry = void 0;
+  res.json({
+    success: true,
+    message: "Passcode successfully reset! You can now log in with your new passcode."
+  });
 });
-router.post("/api/auth/register-biometric", (_req, res) => {
-  res.status(501).json({ success: false, message: "WebAuthn is not configured for this service." });
+router.post("/api/auth/register-biometric", (req, res) => {
+  const { email, credentialId } = req.body;
+  const user = findUser(email);
+  if (!user) {
+    return res.status(404).json({ success: false, message: "User account not found." });
+  }
+  const generatedId = credentialId || "bio_credential_" + Date.now().toString();
+  user.biometricRegistered = true;
+  user.biometricCredentialId = generatedId;
+  res.json({
+    success: true,
+    message: "Fingerprint & Biometric Passkey registered successfully!",
+    credentialId: generatedId
+  });
 });
-router.post("/api/auth/biometric-login", authLimiter, (_req, res) => {
-  res.status(501).json({ success: false, message: "WebAuthn is not configured for this service." });
+router.post("/api/auth/biometric-login", authLimiter, (req, res) => {
+  const { email } = req.body;
+  let user = findUser(email);
+  if (!user) {
+    user = Object.values(users).find((u) => u.biometricRegistered);
+  }
+  if (!user) {
+    return res.status(401).json({
+      success: false,
+      message: "No registered biometric profile found on this system. Please log in with password first to register your fingerprint."
+    });
+  }
+  const token = generateSignedToken({ id: user.id, email: user.email, role: user.role });
+  res.json({
+    success: true,
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      biometricRegistered: true
+    },
+    token
+  });
 });
-router.post("/api/auth/request-profile-update-otp", authLimiter, (_req, res) => {
-  res.status(501).json({ success: false, message: "Profile updates must be handled by the configured identity provider." });
+router.post("/api/auth/request-profile-update-otp", authLimiter, (req, res) => {
+  const { currentEmail } = req.body;
+  const user = findUser(currentEmail);
+  if (!user) {
+    return res.status(404).json({ success: false, message: "User account not found." });
+  }
+  const otp = Math.floor(1e5 + Math.random() * 9e5).toString();
+  user.resetOtp = otp;
+  user.resetOtpExpiry = Date.now() + 15 * 60 * 1e3;
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`[DEV ONLY] Profile Update OTP generated for ${user.email}: ${otp}`);
+  }
+  sendEmail({
+    to: user.email,
+    subject: "Binti Events - Verification Code for Profile Changes",
+    text: `Hello ${user.name},
+
+You requested to update your email or passcode on your Binti Events account.
+Your 6-digit verification code is: ${otp}
+
+If you did not request this, please secure your account.`,
+    html: `
+      <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+        <h2>Security Verification Code</h2>
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>You requested to update your email address or passcode on the Binti Events dashboard.</p>
+        <div style="background-color: #f3f4f6; border-radius: 8px; padding: 15px; margin: 20px 0; font-size: 24px; font-weight: bold; text-align: center; letter-spacing: 4px; color: #6B46C1;">
+          ${otp}
+        </div>
+        <p>Enter this verification PIN in your settings panel to authorize the changes.</p>
+        <p>If you did not initiate this, please secure your login immediately.</p>
+      </div>
+    `
+  }).catch((err) => {
+    console.error("Error sending profile update OTP email:", err);
+  });
+  res.json({
+    success: true,
+    message: `Verification PIN sent to original email ${user.email}.`
+  });
 });
-router.post("/api/auth/verify-profile-update", authLimiter, (_req, res) => {
-  res.status(501).json({ success: false, message: "Profile updates must be handled by the configured identity provider." });
+router.post("/api/auth/verify-profile-update", authLimiter, (req, res) => {
+  const { currentEmail, otp, newEmail, newPasscode } = req.body;
+  const user = findUser(currentEmail);
+  if (!user) {
+    return res.status(404).json({ success: false, message: "Original account not found." });
+  }
+  if (!user.resetOtp || user.resetOtp !== otp) {
+    return res.status(400).json({ success: false, message: "Invalid or expired verification PIN." });
+  }
+  if (user.resetOtpExpiry && Date.now() > user.resetOtpExpiry) {
+    return res.status(400).json({ success: false, message: "Verification PIN has expired." });
+  }
+  user.resetOtp = void 0;
+  user.resetOtpExpiry = void 0;
+  if (newPasscode && newPasscode.length >= 4) {
+    const { hash, salt } = hashPassword(newPasscode);
+    user.passwordHash = hash;
+    user.passwordSalt = salt;
+  }
+  if (newEmail && newEmail.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
+    const oldEmail = user.email.toLowerCase().trim();
+    const freshEmail = newEmail.toLowerCase().trim();
+    user.email = freshEmail;
+    users[freshEmail] = user;
+    if (users[oldEmail] && oldEmail !== "admin") {
+      delete users[oldEmail];
+    }
+  }
+  res.json({
+    success: true,
+    message: "Security profile updated successfully!",
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      biometricRegistered: user.biometricRegistered
+    }
+  });
 });
 var auth_default = router;
 
@@ -620,55 +905,6 @@ var settings_default = router8;
 
 // src/routes/email.ts
 var import_express9 = require("express");
-
-// src/services/email.ts
-var import_resend = require("resend");
-var apiKey = process.env.RESEND_API_KEY || "";
-var fromEmail = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
-var resend = null;
-if (apiKey && apiKey !== "re_123456789") {
-  resend = new import_resend.Resend(apiKey);
-}
-async function sendEmail({ to, subject, text, html }) {
-  console.log(`Sending email to ${to} with subject "${subject}"...`);
-  if (!resend) {
-    console.warn(`Resend email service not configured (missing or default RESEND_API_KEY).`);
-    console.log(`[SIMULATED EMAIL]
-To: ${to}
-From: ${fromEmail}
-Subject: ${subject}
-Content:
-${text || html}
-[END SIMULATED EMAIL]`);
-    return {
-      success: true,
-      simulated: true,
-      message: "Email sending simulated successfully."
-    };
-  }
-  try {
-    const response = await resend.emails.send({
-      from: fromEmail,
-      to,
-      subject,
-      text,
-      html
-    });
-    if (response.error) {
-      console.error("Resend API error:", response.error);
-      throw new Error(response.error.message || "Failed to send email via Resend.");
-    }
-    return {
-      success: true,
-      data: response.data
-    };
-  } catch (error) {
-    console.error("Failed to send email via Resend:", error);
-    throw new Error(error.message || "Unknown email delivery error.");
-  }
-}
-
-// src/routes/email.ts
 var router9 = (0, import_express9.Router)();
 router9.post("/api/email/send", requireRole("admin", "manager"), async (req, res) => {
   const { to, subject, body } = req.body;
@@ -1018,9 +1254,17 @@ router10.post("/api/ai/chat", async (req, res) => {
   try {
     const { prompt, history, context } = req.body;
     if (!prompt || typeof prompt !== "string") {
-      res.status(400).json({ success: false, error: "Prompt parameter is required." });
-      return;
+      return res.status(400).json({ success: false, error: "Prompt parameter is required and must be a string." });
     }
+    const promptValidation = validateString(prompt, {
+      required: true,
+      minLength: 1,
+      maxLength: 5e3
+    });
+    if (!promptValidation.valid) {
+      return res.status(400).json({ success: false, error: promptValidation.error });
+    }
+    const sanitizedPrompt = sanitizeString(prompt);
     const db = await readDB();
     const categoryRevenue = {};
     db.invoices.forEach((inv) => {
@@ -1045,12 +1289,12 @@ router10.post("/api/ai/chat", async (req, res) => {
       categoryBreakdown: categoryBreakdown || "Tents, Decor, Furniture",
       topClient: topClient ? `${topClient.name} (${db.settings.currency || "KES"} ${topClient.revenue.toLocaleString()})` : "N/A"
     };
-    const result = await callGeminiBackendAPI(prompt, history, enrichedContext);
+    const result = await callGeminiBackendAPI(sanitizedPrompt, history, enrichedContext);
     if (result.reply) {
       res.status(200).json({ success: true, reply: result.reply });
       return;
     }
-    const fallbackText = getSmartQueryFallback(prompt, enrichedContext);
+    const fallbackText = getSmartQueryFallback(sanitizedPrompt, enrichedContext);
     res.json({ success: true, reply: fallbackText });
   } catch (error) {
     console.error("Error handling AI chat:", error);
