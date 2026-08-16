@@ -88,6 +88,8 @@ export interface CompanySettings {
   phone: string;
   address: string;
   taxNumber: string;
+  bankDetails?: string;
+  bank_details?: string;
   currency: string;
   invoiceFormat: string;
   quoteFormat: string;

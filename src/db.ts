@@ -11,6 +11,7 @@ export const defaultSettings: CompanySettings = {
   companyName: 'Binti Events', email: 'billing@bintievents.co.ke', phone: '+254 712 345678',
   address: 'Sura Office Suites, Nairobi, Kenya', taxNumber: 'P051234567A', currency: 'KES',
   invoiceFormat: 'INV-{YYYY}-{SEQ}', quoteFormat: 'QT-{YYYY}-{SEQ}',
+  bankDetails: 'Bank: Equity Bank Kenya\nAccount Name: Binti Events Ltd\nAccount Number: 0123456789012\nBranch: Ngong Road\nPaybill: 247247 (Acc: 0123456789012)',
   termsTemplate: '50% deposit is required to confirm the booking. The balance is due 7 days before setup.',
   emailTemplate: 'Dear {CLIENT_NAME},\n\nPlease find attached {TYPE} {NUMBER} from Binti Events.\n\nThank you.'
 };
