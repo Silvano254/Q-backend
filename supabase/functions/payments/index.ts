@@ -79,12 +79,14 @@ serve(async (req) => {
     // Update invoice with new payment
     const existingPayments = invoice.payments || []
     const updatedPayments = [...existingPayments, paymentRecord]
-    const totalPaid = updatedPayments.reduce((sum, p) => sum + p.amountPaid, 0)
-    const balanceRemaining = invoice.grandTotal - totalPaid
+    const totalPaid = updatedPayments.reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0)
+    const rawGrandTotal = invoice.grandTotal ?? (invoice as any).grandtotal ?? (invoice as any).grand_total ?? 0
+    const grandTotal = Number(rawGrandTotal)
+    const balanceRemaining = Math.max(0, grandTotal - totalPaid)
 
-    // Determine new status
+    // Determine new status accurately
     let newStatus = invoice.status
-    if (balanceRemaining <= 0) {
+    if (balanceRemaining <= 0 || (grandTotal > 0 && totalPaid >= grandTotal)) {
       newStatus = 'paid'
     } else if (totalPaid > 0) {
       newStatus = 'partially_paid'
