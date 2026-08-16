@@ -1,121 +1,64 @@
-# Binti Events Corporate Suite — Backend REST API Service
+# Binti Events Corporate Suite — Backend API & Edge Functions
 
 > **Author:** Silvano Otieno  
 > **Repository:** [Silvano254/Q-backend](https://github.com/Silvano254/Q-backend.git)  
-> **Deployed Backend Service:** [binti-events-backend.onrender.com](https://binti-events-backend.onrender.com)
+> **Supabase Project:** `ltinjyvcrgwcvudrnfby`  
+> **Frontend App:** [q-frontend-weld.vercel.app](https://q-frontend-weld.vercel.app)
 
-The backend service for Binti Events Corporate Suite is a Node.js / Express REST API server providing database persistence, email dispatching via Resend, and **Binti AI Assistant** integration using Google Gemini 3.5+ REST endpoints with dynamic business context injection and function calling.
-
----
-
-## 🛠️ Technology Stack
-
-- **Runtime**: Node.js 18+
-- **Framework**: Express.js (ES modules / CommonJS bundled output)
-- **Database**: Supabase PostgreSQL in production; local JSON storage only for development
-- **Bundler**: esbuild
-- **AI Processing**: Google Gemini 3.5+ REST API (Google AI Studio)
-- **Email Service**: Resend API
-- **Deployment Platform**: Render
+The backend architecture for Binti Events Corporate Suite is built on **Supabase PostgreSQL & Edge Functions (Deno / TypeScript)** with an Express REST fallback server. It powers authentication, dynamic data persistence, payment logging with automated balance calculations, email dispatching, and **Binti AI** capabilities via Google Gemini.
 
 ---
 
-## 📡 API Routes & Endpoints
+## 🛠️ Architecture & Technology Stack
 
-### 1. Binti AI Assistant Services (`/api/ai/*`)
-- `POST /api/ai/chat`: Interactive multi-turn chat endpoint for Binti AI. Receives user prompts, conversation history, and live context, and calls Google Gemini 3.5+ models (`gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`).
-- `POST /api/ai/analyze`: Generates executive business & financial health reports using database aggregates.
-- `POST /api/ai/draft-email`: Generates formatted payment reminder & follow-up email drafts.
-- `POST /api/ai/recommend-terms`: Recommends contract terms based on client profile & event line items.
-
-### 2. Master Data Management
-- `GET /api/clients` & `POST /api/clients`: Manage client directory profiles.
-- `GET /api/quotes` & `POST /api/quotes`: Quotation management and quote-to-invoice conversion.
-- `GET /api/invoices` & `POST /api/invoices`: Tax invoice ledger and balance tracking.
-- `GET /api/payments` & `POST /api/payments`: Record incoming payments and update invoice balances.
-- `GET /api/products` & `POST /api/products`: Event equipment catalog management.
-- `GET /api/settings` & `POST /api/settings`: System settings configuration.
+- **Cloud Platform**: Supabase (PostgreSQL 15+, Supabase Edge Functions)
+- **Runtime**: Deno (Edge Functions) / Node.js 18+ (Express server fallback)
+- **AI Processing**: Google Gemini (Flash & Pro models) via Google AI Studio API
+- **Authentication**: JWT-based secure session tokens with bcrypt password hashing
+- **Deployment**: Supabase Functions CLI (`supabase functions deploy`)
 
 ---
 
-## ⚙️ Environment Variables
+## 📡 Edge Function Endpoints
 
-Create a `.env` file in the root directory (or configure in Render Environment Settings):
+### 1. Authentication & Users (`/auth-login`, `/auth-reset`)
+- `POST /functions/v1/auth-login`: Validates admin credentials against PostgreSQL table `auth_users` with case-insensitive column mapping and bcrypt verification.
+- `POST /functions/v1/auth-reset`: Handles password recovery requests and updates hashed credentials.
 
-```env
-# Server Port (Render automatically supplies PORT in production)
-PORT=3000
+### 2. Quotations & Billing (`/quotes`, `/invoices`, `/payments`)
+- `GET | POST | PUT | DELETE /functions/v1/quotes`: Manages proposal lifecycles, itemized inventory, and optional transport line items.
+- `GET | POST | PUT | DELETE /functions/v1/invoices`: Tax invoice management, due date calculations, and status tracking (*draft*, *pending*, *partially_paid*, *paid*, *overdue*).
+- `GET | POST /functions/v1/payments`: Records partial or full payment transactions, dynamically resolves PostgreSQL column casing, updates remaining balances (`balanceRemaining`), and updates invoice status to `paid` upon full settlement.
 
-# Node Environment
-NODE_ENV=production
+### 3. Master Data & Settings (`/clients`, `/products`, `/settings`)
+- `GET | POST | PUT | DELETE /functions/v1/clients`: Corporate & individual client directory management.
+- `GET | POST | PUT | DELETE /functions/v1/products`: Event equipment catalog and standard pricing.
+- `GET | PUT /functions/v1/settings`: Company profile settings, official bank details, terms templates, and logo assets.
 
-# Allowed CORS Origin(s) (Comma-separated list or frontend URL)
-CORS_ORIGIN=http://localhost:5173, https://q-frontend-weld.vercel.app
-
-# Supabase service role credentials (server only; never expose these to a frontend)
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-
-# Required authentication secrets
-JWT_SECRET=generate_a_long_random_secret
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=generate_a_long_unique_password
-
-# Google Gemini API Key (Configured on Render for production Binti AI processing)
-GEMINI_API_KEY=your_gemini_api_key_here
-
-# Resend Email Configuration
-RESEND_API_KEY=re_123456789
-RESEND_FROM_EMAIL=Binti Events <onboarding@resend.dev>
-
-```
+### 4. Binti AI Services (`/ai-assistant`)
+- `POST /functions/v1/ai-assistant`: Contextual business assistant, automated financial summaries, contract term recommendations, and customized email drafts.
 
 ---
 
-## 🚀 Development & Build Workflow
+## 🚀 Deployment Workflow
 
-### 1. Install Dependencies
+To deploy Edge Functions to Supabase:
 ```bash
-npm install
+# Link your project (if not linked)
+npx supabase link --project-ref ltinjyvcrgwcvudrnfby
+
+# Deploy all edge functions without JWT gateway restrictions
+npx supabase functions deploy auth-login --no-verify-jwt
+npx supabase functions deploy payments --no-verify-jwt
+npx supabase functions deploy invoices --no-verify-jwt
+npx supabase functions deploy quotes --no-verify-jwt
+npx supabase functions deploy clients --no-verify-jwt
+npx supabase functions deploy products --no-verify-jwt
+npx supabase functions deploy settings --no-verify-jwt
+npx supabase functions deploy ai-assistant --no-verify-jwt
 ```
-
-### 2. Development Mode
-```bash
-npm run dev
-```
-
-### 3. Production Build
-```bash
-npm run build
-```
-This compiles `src/index.ts` into a single production bundle at `dist/server.cjs` using `esbuild`.
-
-### 4. Start Production Server
-```bash
-npm start
-```
-
-## Security and deployment requirements
-
-- Run `supabase/schema.sql` before deploying. It removes anonymous database policies and creates the API state table.
-- Configure `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` in Render. The service refuses to start without the authentication variables.
-- All `/api` business endpoints require `Authorization: Bearer <token>` from `POST /api/auth/login`.
-- Local JSON state is disabled when `NODE_ENV=production`; production database failures are returned rather than silently falling back to a second store.
-- To migrate an existing local state file, run `npx tsx scripts/migrate-mongo-to-supabase.ts` with `DATA_FILE` set when it is not `data/server-db.json`.
 
 ---
 
-## 🤖 Binti AI Architecture & Whitelist
-
-The backend enforces strict capability and model filtering:
-- **Allowed Models**: `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite`, `gemini-3.1-flash-lite-preview`, `gemini-3.1-pro-preview`.
-- **Capability Filtering**: Excludes non-text / TTS models automatically.
-- **Dynamic Context Injection**: Injects live metrics (Total Revenue, Billed Service Revenue Breakdown, Active Clients, Outstanding Balances) directly into Gemini system instructions.
-- **Accurate Error Reporting**: Returns explicit HTTP status codes (`401`, `429`, `500`) if API authentication or quota issues occur.
-
----
-
-## 👤 Author & Support
-- **Author**: Silvano Otieno
-- **GitHub**: [@Silvano254](https://github.com/Silvano254)
-- **License**: MIT
+## 🔒 License & Ownership
+Copyright © 2026 Binti Events. All rights reserved.
