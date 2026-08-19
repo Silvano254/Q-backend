@@ -1,24 +1,24 @@
 import { DBState } from '../types.js';
 
 export function generateBusinessAnalysis(db: DBState): string {
-  const totalInvoiced = db.invoices.reduce((sum, inv) => sum + inv.grandTotal, 0);
-  const totalPaid = db.invoices.reduce((sum, inv) => sum + inv.payments.reduce((ps, p) => ps + p.amountPaid, 0), 0);
-  const totalOutstanding = db.invoices.reduce((sum, inv) => sum + inv.balanceRemaining, 0);
+  const totalInvoiced = db.invoices.reduce((sum, inv) => sum + (inv.grandTotal || 0), 0);
+  const totalPaid = db.invoices.reduce((sum, inv) => sum + (inv.payments || []).reduce((ps, p) => ps + (p.amountPaid || 0), 0), 0);
+  const totalOutstanding = db.invoices.reduce((sum, inv) => sum + (inv.balanceRemaining ?? inv.grandTotal ?? 0), 0);
   const recoveryRate = totalInvoiced > 0 ? ((totalPaid / totalInvoiced) * 100).toFixed(1) : '0.0';
-  const overdueInvoices = db.invoices.filter(inv => inv.status === 'overdue');
+  const overdueInvoices = db.invoices.filter(inv => inv.status === 'overdue' || (inv.status !== 'paid' && (inv.balanceRemaining ?? inv.grandTotal ?? 0) > 0));
   const activeClients = db.clients.filter(c => c.status === 'active');
   const convertedQuotes = db.quotes.filter(q => q.status === 'converted').length;
   const conversionRate = db.quotes.length > 0 ? ((convertedQuotes / db.quotes.length) * 100).toFixed(1) : '0.0';
   const avgInvoiceValue = db.invoices.length > 0 ? (totalInvoiced / db.invoices.length) : 0;
   
-  const topClient = [...db.clients].sort((a, b) => b.revenue - a.revenue)[0];
+  const topClient = [...db.clients].sort((a, b) => (b.revenue || 0) - (a.revenue || 0))[0];
   
   const categoryRevenue: Record<string, number> = {};
   db.invoices.forEach(inv => {
-    inv.items.forEach(item => {
-      const product = db.products.find(p => item.description.toLowerCase().includes(p.name.toLowerCase().split(' ')[0].toLowerCase()));
+    (inv.items || []).forEach(item => {
+      const product = db.products.find(p => item.description?.toLowerCase().includes(p.name.toLowerCase().split(' ')[0].toLowerCase()));
       const category = product?.category || 'Decor';
-      categoryRevenue[category] = (categoryRevenue[category] || 0) + item.amount;
+      categoryRevenue[category] = (categoryRevenue[category] || 0) + (item.amount || 0);
     });
   });
   const topCategory = Object.entries(categoryRevenue).sort((a, b) => b[1] - a[1])[0];
@@ -33,7 +33,7 @@ export function generateBusinessAnalysis(db: DBState): string {
 **Cash Recovery Rate:** ${recoveryRate}%
 **Average Invoice Value:** ${fmt(Math.round(avgInvoiceValue))}
 
-Binti Events has invoiced a total of ${fmt(totalInvoiced)} across ${db.invoices.length} invoice(s). Of this, ${fmt(totalPaid)} (${recoveryRate}%) has been collected, leaving ${fmt(totalOutstanding)} in outstanding receivables. ${overdueInvoices.length > 0 ? `⚠️ There are currently ${overdueInvoices.length} overdue invoice(s) totaling ${fmt(overdueInvoices.reduce((s, i) => s + i.balanceRemaining, 0))} that require immediate attention.` : '✅ There are no overdue invoices at this time.'}
+Binti Events has invoiced a total of ${fmt(totalInvoiced)} across ${db.invoices.length} invoice(s). Of this, ${fmt(totalPaid)} (${recoveryRate}%) has been collected, leaving ${fmt(totalOutstanding)} in outstanding receivables. ${overdueInvoices.length > 0 ? `⚠️ There are currently ${overdueInvoices.length} overdue invoice(s) totaling ${fmt(overdueInvoices.reduce((s, i) => s + (i.balanceRemaining ?? i.grandTotal ?? 0), 0))} that require immediate attention.` : '✅ There are no overdue invoices at this time.'}
 
 ---
 
@@ -49,11 +49,11 @@ ${topCategory ? `**Highest Revenue Category:** ${topCategory[0]} — ${fmt(Math.
 
 ## ⚠️ POTENTIAL RISKS & OPPORTUNITIES
 
-${overdueInvoices.length > 0 ? overdueInvoices.map(inv => `• **${inv.clientName}** — Invoice ${inv.invoiceNumber} is overdue with ${fmt(inv.balanceRemaining)} outstanding (due ${inv.dueDate})`).join('\n') : '• No overdue invoices detected — excellent cash flow discipline.'}
+${overdueInvoices.length > 0 ? overdueInvoices.map(inv => `• **${inv.clientName}** — Invoice ${inv.invoiceNumber} has ${fmt(inv.balanceRemaining ?? inv.grandTotal ?? 0)} outstanding (due ${inv.dueDate || 'N/A'})`).join('\n') : '• No overdue invoices detected — excellent cash flow discipline.'}
 
-${db.quotes.filter(q => q.status === 'sent').length > 0 ? `• **${db.quotes.filter(q => q.status === 'sent').length} pending quote(s)** awaiting client response — total potential value: ${fmt(db.quotes.filter(q => q.status === 'sent').reduce((s, q) => s + q.grandTotal, 0))}` : ''}
+${db.quotes.filter(q => q.status === 'sent').length > 0 ? `• **${db.quotes.filter(q => q.status === 'sent').length} pending quote(s)** awaiting client response — total potential value: ${fmt(db.quotes.filter(q => q.status === 'sent').reduce((s, q) => s + (q.grandTotal || 0), 0))}` : ''}
 
-${(() => { const underused = db.products.filter(p => !db.invoices.some(inv => inv.items.some(item => item.description.toLowerCase().includes(p.name.toLowerCase().split('(')[0].trim().toLowerCase())))); return underused.length > 0 ? `• **Underutilized assets:** ${underused.slice(0, 3).map(p => p.name).join(', ')} — consider promotional packages to drive bookings` : '• All product categories are actively generating revenue.'; })()}
+${(() => { const underused = db.products.filter(p => !db.invoices.some(inv => (inv.items || []).some(item => item.description?.toLowerCase().includes(p.name.toLowerCase().split('(')[0].trim().toLowerCase())))); return underused.length > 0 ? `• **Underutilized assets:** ${underused.slice(0, 3).map(p => p.name).join(', ')} — consider promotional packages to drive bookings` : '• All product categories are actively generating revenue.'; })()}
 
 ---
 

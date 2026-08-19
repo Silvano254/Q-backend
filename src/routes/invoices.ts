@@ -18,7 +18,8 @@ router.post('/api/invoices', requireRole('admin', 'manager'), async (req, res) =
   if (!iNum) {
     const year = new Date().getFullYear();
     const sequence = (db.invoices.length + 1).toString().padStart(3, "0");
-    iNum = db.settings.invoiceFormat.replace("{YYYY}", year.toString()).replace("{SEQ}", sequence);
+    const format = db.settings.invoiceFormat || "INV-{YYYY}-{SEQ}";
+    iNum = format.replace("{YYYY}", year.toString()).replace("{SEQ}", sequence);
   }
 
   const paidSum = (invoiceData.payments || []).reduce((sum: number, p: PaymentRecord) => sum + (Number(p.amountPaid) || 0), 0);
@@ -101,7 +102,8 @@ router.post('/api/invoices/:id/payments', requireRole('admin', 'manager'), async
     const invoice = db.invoices[invoiceIndex];
     const paymentData = req.body;
     const amountPaid = Number(paymentData.amountPaid);
-    if (!Number.isFinite(amountPaid) || amountPaid <= 0 || amountPaid > invoice.balanceRemaining) {
+    const remaining = invoice.balanceRemaining ?? invoice.grandTotal ?? 0;
+    if (!Number.isFinite(amountPaid) || amountPaid <= 0 || amountPaid > remaining) {
       return res.status(400).json({ message: 'Payment amount must be positive and cannot exceed the outstanding balance.' });
     }
     

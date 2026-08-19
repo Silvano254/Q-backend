@@ -18,7 +18,8 @@ router.post('/api/quotes', requireRole('admin', 'manager'), async (req, res) => 
   if (!qNum) {
     const year = new Date().getFullYear();
     const sequence = (db.quotes.length + 1).toString().padStart(3, "0");
-    qNum = db.settings.quoteFormat.replace("{YYYY}", year.toString()).replace("{SEQ}", sequence);
+    const format = db.settings.quoteFormat || "QT-{YYYY}-{SEQ}";
+    qNum = format.replace("{YYYY}", year.toString()).replace("{SEQ}", sequence);
   }
 
   const newQuote: Quote = {
