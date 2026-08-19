@@ -51,11 +51,9 @@ You have complete visibility into the schemas below as well as the Raw Column He
 3. EXPENSE TABLE (\`expenses\`): category, description, amount, date (YYYY-MM-DD), referenceNumber.
 4. QUOTE & INVOICE SCHEMAS: quoteNumber, invoiceNumber, clientName, items, subtotal, taxAmount, totalAmount, amountPaid, balanceDue, status.
 
-CRITICAL GROUNDING RULES FOR SPREADSHEETS & IMAGES:
-- When an image (receipt, fuel slip, invoice photo, cash voucher) is uploaded, examine the visual image directly and extract: Vendor/Supplier Name, Transaction Date, Category, Line Items, and Total Amount in KES.
-- When a SPREADSHEET ANALYSIS & AUDIT REPORT is attached in the prompt, you MUST use the exact numbers and counts stated in the report.
-- If the report states "Client Records: 8,000 clients", you MUST report 8,000 clients. If the report states "Invoices Issued: 9,000 invoices (Total Invoiced Turnover: KES 13,625,654,681)", you MUST report those exact numbers.
-- NEVER invent, round, or guess client, invoice, or revenue figures. Answer questions with exact factual numbers from the document.
+CRITICAL GROUNDING RULES:
+- LIVE DATABASE QUERIES (e.g. 'check system dashboard', 'check core billing metrics', 'how many clients do I have', 'current stats', 'what is our revenue'): You MUST ONLY report the exact numbers from the Current Business Context below. If it says Active Clients: 0, you MUST report 0 clients. NEVER claim data from previous uploaded files is in the live database unless it appears in Current Business Context.
+- UPLOADED DOCUMENT AUDITS: When a SPREADSHEET ANALYSIS & AUDIT REPORT or [Extracted Table] is attached in the current prompt, report the exact numbers stated in that document for the file analysis.
 - REAL DATABASE MUTATIONS: You do NOT execute silent database commits through conversational text alone. NEVER claim "Status: Committed" or output fake markdown button placeholders. Summarize the mapped records cleanly; interactive action confirmation cards are automatically generated beneath your response for Virginia to execute the import.`;
 
   const contextBlock = `

@@ -338,9 +338,9 @@ You have complete visibility into the schemas below as well as the Raw Column He
 4. QUOTE & INVOICE SCHEMAS: quoteNumber, invoiceNumber, clientName, items, subtotal, taxAmount, totalAmount, amountPaid, balanceDue, status.`;
 
 CRITICAL GROUNDING RULES:
-1. When a SPREADSHEET ANALYSIS & AUDIT REPORT is attached in the prompt, you MUST use the exact numbers and counts stated in the report.
-2. If the report states "Client Records: 8,000 clients", you MUST report 8,000 clients. If the report states "Invoices Issued: 9,000 invoices (Total Invoiced Turnover: KES 13,625,654,681)", you MUST report those exact numbers.
-3. NEVER invent, round, or guess client, invoice, or revenue figures. Answer questions with exact factual numbers from the document.
+1. LIVE DATABASE QUERIES (e.g. 'check system dashboard', 'check core billing metrics', 'how many clients do I have', 'current stats', 'what is our revenue'): You MUST ONLY report the exact numbers from the [AUTHENTIC_DATABASE_METRICS_JSON] block below. If it says clientCount: 0, you MUST report 0 clients. NEVER claim data from previous uploaded files is in the live database unless it appears in [AUTHENTIC_DATABASE_METRICS_JSON].
+2. UPLOADED DOCUMENT AUDITS: When a SPREADSHEET ANALYSIS & AUDIT REPORT or [Extracted Table] is attached in the current prompt, report the exact numbers stated in that document for the file analysis.
+3. NEVER invent, round, or guess client, invoice, or revenue figures.
 4. REAL DATABASE MUTATIONS: You do NOT execute silent database commits through conversational text alone. NEVER claim "Status: Committed" or output fake markdown button placeholders. Summarize the mapped records cleanly; interactive action confirmation cards are automatically generated beneath your response for Virginia to execute the import.`;
 
     // Structured JSON Context Block for reliable grounding
