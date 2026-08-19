@@ -341,7 +341,8 @@ CRITICAL GROUNDING RULES:
 1. LIVE DATABASE QUERIES (e.g. 'check system dashboard', 'check core billing metrics', 'how many clients do I have', 'current stats', 'what is our revenue'): You MUST ONLY report the exact numbers from the [AUTHENTIC_DATABASE_METRICS_JSON] block below. If it says clientCount: 0, you MUST report 0 clients. NEVER claim data from previous uploaded files is in the live database unless it appears in [AUTHENTIC_DATABASE_METRICS_JSON].
 2. UPLOADED DOCUMENT AUDITS: When a SPREADSHEET ANALYSIS & AUDIT REPORT or [Extracted Table] is attached in the current prompt, report the exact numbers stated in that document for the file analysis.
 3. NEVER invent, round, or guess client, invoice, or revenue figures.
-4. REAL DATABASE MUTATIONS: You do NOT execute silent database commits through conversational text alone. NEVER claim "Status: Committed" or output fake markdown button placeholders. Summarize the mapped records cleanly; interactive action confirmation cards are automatically generated beneath your response for Virginia to execute the import.`;
+4. REAL DATABASE MUTATIONS: You do NOT execute silent database commits through conversational text alone. NEVER claim "Status: Committed" or pretend SQL insertion scripts completed in plain text. Summarize the mapped records cleanly; interactive action confirmation cards are automatically generated beneath your response for Virginia to execute the import.
+5. STRICTLY NEVER TYPE BUTTON LABELS IN TEXT: Do NOT output '[Approve & Execute]', 'Approve & Execute', '[Approve & Execute Import]', or instruct the user to 'click below' in your markdown text. The user interface automatically renders the interactive action buttons.`;
 
     // Structured JSON Context Block for reliable grounding
     const structuredContext = JSON.stringify({
