@@ -140,9 +140,8 @@ async function hydrateBusinessContext(authHeader?: string | null): Promise<any> 
 function extractServerActions(prompt: string, document?: any): any[] {
   const actions: any[] = [];
   const p = prompt.toLowerCase();
-  const isWriteIntent = /\b(import|save|load|insert|record|add to|create|write|draft|post)\b/i.test(p);
 
-  if (document && isWriteIntent) {
+  if (document) {
     const docName = (document.name || "").toLowerCase();
     const isImage = (document.mimeType || "").startsWith("image/");
     const finDoc = document.financialDoc;
@@ -172,10 +171,13 @@ function extractServerActions(prompt: string, document?: any): any[] {
     }
 
     if (document.tables && document.tables.length > 0) {
-      const clientTable = document.tables.find((t: any) => t.headers?.some((h: string) => /client|customer|name|contact/i.test(h)));
+      const clientTable = document.tables.find((t: any) => 
+        (t.name && /client|customer|member|lead|contact/i.test(t.name)) ||
+        (t.headers && t.headers.some((h: string) => /client|customer|name|contact/i.test(h)))
+      );
       if (clientTable && clientTable.rows?.length > 0) {
         actions.push({
-          id: `act-imp-${Date.now()}`,
+          id: `act-imp-clients-${Date.now()}`,
           type: "import_clients",
           label: `Import ${clientTable.rows.length.toLocaleString()} Clients into Database`,
           icon: "database",
@@ -183,6 +185,23 @@ function extractServerActions(prompt: string, document?: any): any[] {
           riskLevel: "medium",
           summary: `Add ${clientTable.rows.length.toLocaleString()} validated client records from ${document.name} directly to your directory.`,
           payload: { clientsCount: clientTable.rows.length }
+        });
+      }
+
+      const productTable = document.tables.find((t: any) => 
+        (t.name && /product|service|catalog|item|inventory|equipment/i.test(t.name)) ||
+        (t.headers && t.headers.some((h: string) => /service|item|product|price|unit/i.test(h)))
+      );
+      if (productTable && productTable.rows?.length > 0) {
+        actions.push({
+          id: `act-imp-prods-${Date.now()}`,
+          type: "import_products",
+          label: `Import ${productTable.rows.length.toLocaleString()} Catalog Items into Products`,
+          icon: "database",
+          isMutation: true,
+          riskLevel: "medium",
+          summary: `Add ${productTable.rows.length.toLocaleString()} product & service items from ${document.name} into your active product catalog.`,
+          payload: { productsCount: productTable.rows.length }
         });
       }
     }
@@ -322,8 +341,7 @@ CRITICAL GROUNDING RULES:
 1. When a SPREADSHEET ANALYSIS & AUDIT REPORT is attached in the prompt, you MUST use the exact numbers and counts stated in the report.
 2. If the report states "Client Records: 8,000 clients", you MUST report 8,000 clients. If the report states "Invoices Issued: 9,000 invoices (Total Invoiced Turnover: KES 13,625,654,681)", you MUST report those exact numbers.
 3. NEVER invent, round, or guess client, invoice, or revenue figures. Answer questions with exact factual numbers from the document.
-4. Only propose mutation actions (e.g. import_clients, create_expense) when Virginia explicitly asks to import, save, or record data. Do not generate write buttons for simple read queries (e.g. "how many clients", "check finances").
-5. REAL DATABASE MUTATIONS: You do NOT execute silent database commits through conversational text alone. NEVER claim "Status: Committed" or pretend SQL insertion scripts completed in plain text. When an import or write is requested, summarize the mapped records and instruct Virginia to click [Approve & Execute] to commit them to the live database.`;
+4. REAL DATABASE MUTATIONS: You do NOT execute silent database commits through conversational text alone. NEVER claim "Status: Committed" or output fake markdown button placeholders. Summarize the mapped records cleanly; interactive action confirmation cards are automatically generated beneath your response for Virginia to execute the import.`;
 
     // Structured JSON Context Block for reliable grounding
     const structuredContext = JSON.stringify({
