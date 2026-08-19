@@ -23,7 +23,7 @@ serve(async (req) => {
   }
 
   try {
-    const { prompt, history, context } = await req.json();
+    const { prompt, history, context, document } = await req.json();
     const apiKey = Deno.env.get("GEMINI_API_KEY") || "";
 
     if (!apiKey) {
@@ -31,6 +31,11 @@ serve(async (req) => {
         JSON.stringify({ success: false, error: "GEMINI_API_KEY is not set in Supabase Secrets." }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 401 }
       );
+    }
+
+    let finalPrompt = prompt || "";
+    if (document && document.content) {
+      finalPrompt += `\n\n[Uploaded Document: ${document.name} (${document.type || 'file'})]\n${document.content}`;
     }
 
     const systemInstructionText = `You are Binti, the intelligent single-user business operating assistant for Binti Events Management System created by Silvano Otieno.
@@ -75,7 +80,7 @@ Guidelines:
 
     contents.push({
       role: "user",
-      parts: [{ text: prompt }]
+      parts: [{ text: finalPrompt }]
     });
 
     for (const modelName of GEMINI_ALLOWED_MODELS) {

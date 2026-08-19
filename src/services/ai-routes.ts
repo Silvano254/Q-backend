@@ -140,7 +140,7 @@ Guidelines:
 // Binti Interactive Chat Endpoint
 router.post('/api/ai/chat', async (req, res) => {
   try {
-    const { prompt, history, context } = req.body;
+    const { prompt, history, context, document } = req.body;
     
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ success: false, error: 'Prompt parameter is required and must be a string.' });
@@ -149,14 +149,18 @@ router.post('/api/ai/chat', async (req, res) => {
     const promptValidation = validateString(prompt, {
       required: true,
       minLength: 1,
-      maxLength: 5000
+      maxLength: 10000
     });
 
     if (!promptValidation.valid) {
       return res.status(400).json({ success: false, error: promptValidation.error });
     }
 
-    const sanitizedPrompt = sanitizeString(prompt);
+    let sanitizedPrompt = sanitizeString(prompt);
+    if (document && document.content) {
+      sanitizedPrompt += `\n\n[Uploaded Document: ${document.name} (${document.type || 'file'})]\n${document.content}`;
+    }
+
     const db = await readDB();
 
     const totalRev = db.invoices.reduce((s, i) => s + (i.payments || []).reduce((p, pm) => p + (pm.amountPaid || 0), 0), 0);
