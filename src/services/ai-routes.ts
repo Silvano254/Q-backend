@@ -11,40 +11,26 @@ interface CallGeminiResult {
   error?: string;
 }
 
-// Allowed Gemini 3.x Models Whitelist
-const GEMINI_ALLOWED_MODELS = [
+const GEMINI_PRIMARY_MODELS = [
   "gemini-3.5-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.6-flash",
-  "gemini-3-flash-preview",
   "gemini-3.1-flash-lite",
-  "gemini-3.1-flash-lite-preview",
   "gemini-3.1-pro-preview"
 ];
 
+const MAX_PROMPT_LEN = 4000;
+const MAX_HISTORY_ITEMS = 20;
+const MAX_MSG_CONTENT_LEN = 8000;
+const MAX_DOC_CONTENT_LEN = 50000;
+const MAX_IMAGE_BASE64_BYTES = 7 * 1024 * 1024;
+const FETCH_TIMEOUT_MS = 25000;
+
 /**
- * Invokes Google Gemini REST API targeting strictly allowed Gemini 3.x models
+ * Builds the complete structured system prompt
  */
-async function callGeminiBackendAPI(prompt: string, history: any[] = [], context: any = {}, document?: any): Promise<CallGeminiResult> {
-  const apiKey = (
-    process.env.GEMINI_API_KEY || 
-    process.env.GEMINI_KEY || 
-    process.env.GOOGLE_GEMINI_API_KEY || 
-    process.env.GOOGLE_API_KEY || 
-    process.env.VITE_GEMINI_API_KEY || 
-    process.env.API_KEY || 
-    ''
-  ).trim();
-
-  if (!apiKey) {
-    return {
-      reply: null,
-      statusCode: 401,
-      error: "No Gemini API Key found in server environment variables (GEMINI_API_KEY)."
-    };
-  }
-
-  const systemInstructionText = `You are Binti, an intelligent, concise, executive business data assistant for Binti Events.
+function buildSystemInstruction(context: any): string {
+  const baseInstruction = `You are Binti, an intelligent, concise, executive business data assistant for Binti Events.
 Never mention external developers, builders, creators, or names like Silvano Otieno.
 
 TONE & COMMUNICATION RULES:
@@ -72,18 +58,43 @@ CRITICAL GROUNDING RULES FOR SPREADSHEETS & IMAGES:
 - Only propose mutation actions (e.g. import_clients, create_expense) when Virginia explicitly asks to import, save, or record data. Do not generate write buttons for simple read queries (e.g. "how many clients", "check finances").
 - REAL DATABASE MUTATIONS: You do NOT execute silent database commits through conversational text alone. NEVER claim "Status: Committed" or pretend SQL insertion scripts completed in plain text. When an import or write is requested, summarize the mapped records and instruct Virginia to click [Approve & Execute] to commit them to the live database.`;
 
+  const contextBlock = `
+Current Business Context:
+- Company: ${context?.companyName || 'Binti Events'}
+- Currency: ${context?.currency || 'KES'}
+- Total Revenue: ${context?.currency || 'KES'} ${(context?.totalRevenue || 0).toLocaleString()}
+- Outstanding Receivables: ${context?.currency || 'KES'} ${(context?.pendingBalance || 0).toLocaleString()}
+- Active Clients: ${context?.clientCount ?? 0}
+- Quotes Issued: ${context?.totalQuotes ?? 0}
+- Invoices Issued: ${context?.totalInvoices ?? 0}`;
+
+  return `${baseInstruction}\n\n${contextBlock}`;
+}
+
+/**
+ * Builds valid alternating conversation contents for Gemini API
+ */
+function buildGeminiContents(prompt: string, history: any[] = [], document?: any): any[] {
   const contents: any[] = [];
   if (Array.isArray(history)) {
-    const validHistory = history.filter((msg: any) => msg && (msg.role === "user" || msg.role === "model") && msg.content);
-    while (validHistory.length > 0 && validHistory[0].role === "model") {
-      validHistory.shift();
-    }
-    validHistory.slice(-10).forEach((msg: any) => {
-      contents.push({
+    const sanitizedHistory = history
+      .filter((msg: any) => msg && (msg.role === "user" || msg.role === "model") && typeof msg.content === "string")
+      .slice(-MAX_HISTORY_ITEMS)
+      .map((msg: any) => ({
         role: msg.role === "model" ? "model" : "user",
-        parts: [{ text: msg.content }]
-      });
-    });
+        content: msg.content.slice(0, MAX_MSG_CONTENT_LEN)
+      }));
+
+    let expectedRole = "user";
+    for (const msg of sanitizedHistory) {
+      if (msg.role === expectedRole) {
+        contents.push({
+          role: msg.role,
+          parts: [{ text: msg.content }]
+        });
+        expectedRole = expectedRole === "user" ? "model" : "user";
+      }
+    }
   }
 
   if (contents.length > 0 && contents[contents.length - 1].role === "user") {
@@ -115,28 +126,69 @@ CRITICAL GROUNDING RULES FOR SPREADSHEETS & IMAGES:
     parts: userParts
   });
 
-  for (const modelName of GEMINI_ALLOWED_MODELS) {
+  return contents;
+}
+
+/**
+ * Invokes Google Gemini REST API targeting strictly allowed Gemini 3.x models
+ */
+async function callGeminiBackendAPI(prompt: string, history: any[] = [], context: any = {}, document?: any): Promise<CallGeminiResult> {
+  const apiKey = (
+    process.env.GEMINI_API_KEY || 
+    process.env.GEMINI_KEY || 
+    process.env.GOOGLE_GEMINI_API_KEY || 
+    process.env.GOOGLE_API_KEY || 
+    process.env.VITE_GEMINI_API_KEY || 
+    process.env.API_KEY || 
+    ''
+  ).trim();
+
+  if (!apiKey) {
+    return {
+      reply: null,
+      statusCode: 401,
+      error: "No Gemini API Key configured in server environment."
+    };
+  }
+
+  const systemInstructionText = buildSystemInstruction(context);
+  const contents = buildGeminiContents(prompt, history, document);
+
+  const generationPayload = {
+    systemInstruction: { parts: [{ text: systemInstructionText }] },
+    contents,
+    generationConfig: {
+      temperature: 0.7,
+      topK: 40,
+      topP: 0.95,
+      maxOutputTokens: 4096
+    }
+  };
+
+  for (const modelName of GEMINI_PRIMARY_MODELS) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
     try {
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemInstructionText }] },
-          contents,
-          generationConfig: {
-            temperature: 0.7,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 4096
-          }
-        })
+        body: JSON.stringify(generationPayload),
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
 
       if (response.ok) {
         const data: any = await response.json();
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (data.promptFeedback?.blockReason) {
+          console.warn(`[Gemini] Blocked: ${data.promptFeedback.blockReason}`);
+          return { reply: null, statusCode: 400, error: "Prompt could not be processed due to safety guidelines." };
+        }
+
+        const candidate = data?.candidates?.[0];
+        const text = candidate?.content?.parts?.[0]?.text;
         if (text) {
           return { reply: text, statusCode: 200 };
         }
@@ -144,45 +196,41 @@ CRITICAL GROUNDING RULES FOR SPREADSHEETS & IMAGES:
         const errText = await response.text();
         console.warn(`[Gemini 3.x HTTP ${response.status} for ${modelName}]:`, errText);
         
-        if (response.status === 401 || response.status === 403) {
-          return { reply: null, statusCode: 401, error: "Gemini API Key Authentication Failed. Please verify GEMINI_API_KEY." };
+        if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+          return { reply: null, statusCode: response.status, error: "Invalid AI request parameters." };
         }
-        if (response.status === 429) {
-          return { reply: null, statusCode: 429, error: "Gemini API Rate Limit or Quota Exceeded." };
-        }
+
+        await new Promise(r => setTimeout(r, 600));
       }
     } catch (err: any) {
-      console.error(`[Gemini 3.x Error for ${modelName}]:`, err);
+      clearTimeout(timeoutId);
+      console.error(`[Gemini 3.x Error for ${modelName}]:`, err.message);
     }
   }
 
-  return { reply: null, statusCode: 500, error: "Failed to generate response from allowed Gemini 3.x models." };
+  return { reply: null, statusCode: 503, error: "AI service temporarily unavailable." };
 }
 
 // Binti Interactive Chat Endpoint
 router.post('/api/ai/chat', async (req, res) => {
   try {
-    const { prompt, history, context, document } = req.body;
+    const { prompt, history, context, document, stream } = req.body;
     
-    if (!prompt || typeof prompt !== 'string') {
-      return res.status(400).json({ success: false, error: 'Prompt parameter is required and must be a string.' });
+    if ((!prompt || typeof prompt !== 'string') && !document) {
+      return res.status(400).json({ success: false, error: 'Prompt or document parameter is required.' });
     }
 
-    const promptValidation = validateString(prompt, {
-      required: true,
-      minLength: 1,
-      maxLength: 10000
-    });
-
-    if (!promptValidation.valid) {
-      return res.status(400).json({ success: false, error: promptValidation.error });
+    const cleanPrompt = (prompt || "").trim();
+    if (cleanPrompt.length > MAX_PROMPT_LEN) {
+      return res.status(400).json({ success: false, error: `Prompt exceeds maximum length of ${MAX_PROMPT_LEN} characters.` });
     }
 
-    let sanitizedPrompt = sanitizeString(prompt);
-    if (document && document.content) {
-      sanitizedPrompt += `\n\n[Uploaded Document: ${document.name} (${document.type || 'file'})]\n${document.content}`;
+    let finalPrompt = cleanPrompt;
+    if (document?.content && typeof document.content === 'string') {
+      finalPrompt += `\n\n[Uploaded Document: ${document.name || 'Attachment'} (${document.type || 'file'})]\n${document.content.slice(0, MAX_DOC_CONTENT_LEN)}`;
     }
 
+    // Hydrate Genuine Business Context directly from Server DB
     const db = await readDB();
 
     const totalRev = db.invoices.reduce((s, i) => s + (i.payments || []).reduce((p, pm) => p + (pm.amountPaid || 0), 0), 0);
@@ -208,19 +256,58 @@ router.post('/api/ai/chat', async (req, res) => {
       topClient: topClient ? `${topClient.name} (${db.settings.currency || 'KES'} ${topClient.revenue.toLocaleString()})` : 'N/A'
     };
 
-    const result = await callGeminiBackendAPI(sanitizedPrompt, history, enrichedContext, document);
-    
-    if (result.reply) {
-      res.status(200).json({ success: true, reply: result.reply });
-      return;
+    // SSE Streaming Endpoint Handler
+    if (stream === true || req.headers.accept?.includes('text/event-stream')) {
+      const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+      if (!apiKey) {
+        return res.status(500).json({ success: false, error: 'GEMINI_API_KEY not configured.' });
+      }
+
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      const systemInstructionText = buildSystemInstruction(enrichedContext);
+      const contents = buildGeminiContents(finalPrompt, history, document);
+      const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_PRIMARY_MODELS[0]}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+
+      const upstreamRes = await fetch(streamUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemInstructionText }] },
+          contents,
+          generationConfig: { temperature: 0.7, topK: 40, topP: 0.95, maxOutputTokens: 4096 }
+        })
+      });
+
+      if (!upstreamRes.ok || !upstreamRes.body) {
+        res.write(`event: error\ndata: ${JSON.stringify({ error: "Stream unavailable" })}\n\n`);
+        return res.end();
+      }
+
+      const reader = upstreamRes.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(decoder.decode(value, { stream: true }));
+      }
+      return res.end();
     }
 
-    // Smart deterministic fallback
-    const fallbackText = getSmartQueryFallback(sanitizedPrompt, enrichedContext);
-    res.json({ success: true, reply: fallbackText });
+    const result = await callGeminiBackendAPI(finalPrompt, history, enrichedContext, document);
+    
+    if (result.reply) {
+      return res.status(200).json({ success: true, reply: result.reply });
+    }
+
+    // Transparent Smart fallback notice
+    const fallbackText = getSmartQueryFallback(finalPrompt, enrichedContext);
+    return res.json({ success: true, reply: fallbackText });
   } catch (error: any) {
     console.error('Error handling AI chat:', error);
-    res.status(500).json({ success: false, error: 'Failed to process chat request. ' + (error.message || '') });
+    res.status(500).json({ success: false, error: 'Internal server error processing AI chat.' });
   }
 });
 

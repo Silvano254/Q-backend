@@ -490,6 +490,7 @@ var defaultSettings = {
   currency: "KES",
   invoiceFormat: "INV-{YYYY}-{SEQ}",
   quoteFormat: "QT-{YYYY}-{SEQ}",
+  bankDetails: "Bank: Equity Bank Kenya\nAccount Name: Binti Events Ltd\nAccount Number: 0123456789012\nBranch: Ngong Road\nPaybill: 247247 (Acc: 0123456789012)",
   termsTemplate: "50% deposit is required to confirm the booking. The balance is due 7 days before setup.",
   emailTemplate: "Dear {CLIENT_NAME},\n\nPlease find attached {TYPE} {NUMBER} from Binti Events.\n\nThank you."
 };
@@ -660,7 +661,8 @@ router4.post("/api/quotes", requireRole("admin", "manager"), async (req, res) =>
   if (!qNum) {
     const year = (/* @__PURE__ */ new Date()).getFullYear();
     const sequence = (db.quotes.length + 1).toString().padStart(3, "0");
-    qNum = db.settings.quoteFormat.replace("{YYYY}", year.toString()).replace("{SEQ}", sequence);
+    const format = db.settings.quoteFormat || "QT-{YYYY}-{SEQ}";
+    qNum = format.replace("{YYYY}", year.toString()).replace("{SEQ}", sequence);
   }
   const newQuote = {
     ...quoteData,
@@ -708,7 +710,8 @@ router5.post("/api/invoices", requireRole("admin", "manager"), async (req, res) 
   if (!iNum) {
     const year = (/* @__PURE__ */ new Date()).getFullYear();
     const sequence = (db.invoices.length + 1).toString().padStart(3, "0");
-    iNum = db.settings.invoiceFormat.replace("{YYYY}", year.toString()).replace("{SEQ}", sequence);
+    const format = db.settings.invoiceFormat || "INV-{YYYY}-{SEQ}";
+    iNum = format.replace("{YYYY}", year.toString()).replace("{SEQ}", sequence);
   }
   const paidSum = (invoiceData.payments || []).reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
   const grandTotal = Number(invoiceData.grandTotal) || 0;
@@ -779,7 +782,8 @@ router5.post("/api/invoices/:id/payments", requireRole("admin", "manager"), asyn
     const invoice = db.invoices[invoiceIndex];
     const paymentData = req.body;
     const amountPaid = Number(paymentData.amountPaid);
-    if (!Number.isFinite(amountPaid) || amountPaid <= 0 || amountPaid > invoice.balanceRemaining) {
+    const remaining = invoice.balanceRemaining ?? invoice.grandTotal ?? 0;
+    if (!Number.isFinite(amountPaid) || amountPaid <= 0 || amountPaid > remaining) {
       return res.status(400).json({ message: "Payment amount must be positive and cannot exceed the outstanding balance." });
     }
     const newPayment = {
@@ -852,12 +856,12 @@ router7.get("/api/analytics/summary", async (req, res) => {
   const db = await readDB();
   const invoices = db.invoices;
   const quotes = db.quotes;
-  const totalInvoicesValue = invoices.reduce((sum, inv) => sum + inv.grandTotal, 0);
+  const totalInvoicesValue = invoices.reduce((sum, inv) => sum + (inv.grandTotal || 0), 0);
   const totalPaid = invoices.reduce((sum, inv) => {
-    const paidSum = inv.payments.reduce((pSum, pm) => pSum + pm.amountPaid, 0);
+    const paidSum = (inv.payments || []).reduce((pSum, pm) => pSum + (pm.amountPaid || 0), 0);
     return sum + paidSum;
   }, 0);
-  const totalOutstanding = invoices.reduce((sum, inv) => sum + inv.balanceRemaining, 0);
+  const totalOutstanding = invoices.reduce((sum, inv) => sum + (inv.balanceRemaining ?? inv.grandTotal ?? 0), 0);
   const totalQuotes = quotes.length;
   const totalInvoices = invoices.length;
   const activeClientsCount = db.clients.filter((c) => c.status === "active").length;
@@ -931,22 +935,22 @@ var import_express10 = require("express");
 
 // src/services/ai.ts
 function generateBusinessAnalysis(db) {
-  const totalInvoiced = db.invoices.reduce((sum, inv) => sum + inv.grandTotal, 0);
-  const totalPaid = db.invoices.reduce((sum, inv) => sum + inv.payments.reduce((ps, p) => ps + p.amountPaid, 0), 0);
-  const totalOutstanding = db.invoices.reduce((sum, inv) => sum + inv.balanceRemaining, 0);
+  const totalInvoiced = db.invoices.reduce((sum, inv) => sum + (inv.grandTotal || 0), 0);
+  const totalPaid = db.invoices.reduce((sum, inv) => sum + (inv.payments || []).reduce((ps, p) => ps + (p.amountPaid || 0), 0), 0);
+  const totalOutstanding = db.invoices.reduce((sum, inv) => sum + (inv.balanceRemaining ?? inv.grandTotal ?? 0), 0);
   const recoveryRate = totalInvoiced > 0 ? (totalPaid / totalInvoiced * 100).toFixed(1) : "0.0";
-  const overdueInvoices = db.invoices.filter((inv) => inv.status === "overdue");
+  const overdueInvoices = db.invoices.filter((inv) => inv.status === "overdue" || inv.status !== "paid" && (inv.balanceRemaining ?? inv.grandTotal ?? 0) > 0);
   const activeClients = db.clients.filter((c) => c.status === "active");
   const convertedQuotes = db.quotes.filter((q) => q.status === "converted").length;
   const conversionRate = db.quotes.length > 0 ? (convertedQuotes / db.quotes.length * 100).toFixed(1) : "0.0";
   const avgInvoiceValue = db.invoices.length > 0 ? totalInvoiced / db.invoices.length : 0;
-  const topClient = [...db.clients].sort((a, b) => b.revenue - a.revenue)[0];
+  const topClient = [...db.clients].sort((a, b) => (b.revenue || 0) - (a.revenue || 0))[0];
   const categoryRevenue = {};
   db.invoices.forEach((inv) => {
-    inv.items.forEach((item) => {
-      const product = db.products.find((p) => item.description.toLowerCase().includes(p.name.toLowerCase().split(" ")[0].toLowerCase()));
+    (inv.items || []).forEach((item) => {
+      const product = db.products.find((p) => item.description?.toLowerCase().includes(p.name.toLowerCase().split(" ")[0].toLowerCase()));
       const category = product?.category || "Decor";
-      categoryRevenue[category] = (categoryRevenue[category] || 0) + item.amount;
+      categoryRevenue[category] = (categoryRevenue[category] || 0) + (item.amount || 0);
     });
   });
   const topCategory = Object.entries(categoryRevenue).sort((a, b) => b[1] - a[1])[0];
@@ -959,7 +963,7 @@ function generateBusinessAnalysis(db) {
 **Cash Recovery Rate:** ${recoveryRate}%
 **Average Invoice Value:** ${fmt(Math.round(avgInvoiceValue))}
 
-Binti Events has invoiced a total of ${fmt(totalInvoiced)} across ${db.invoices.length} invoice(s). Of this, ${fmt(totalPaid)} (${recoveryRate}%) has been collected, leaving ${fmt(totalOutstanding)} in outstanding receivables. ${overdueInvoices.length > 0 ? `\u26A0\uFE0F There are currently ${overdueInvoices.length} overdue invoice(s) totaling ${fmt(overdueInvoices.reduce((s, i) => s + i.balanceRemaining, 0))} that require immediate attention.` : "\u2705 There are no overdue invoices at this time."}
+Binti Events has invoiced a total of ${fmt(totalInvoiced)} across ${db.invoices.length} invoice(s). Of this, ${fmt(totalPaid)} (${recoveryRate}%) has been collected, leaving ${fmt(totalOutstanding)} in outstanding receivables. ${overdueInvoices.length > 0 ? `\u26A0\uFE0F There are currently ${overdueInvoices.length} overdue invoice(s) totaling ${fmt(overdueInvoices.reduce((s, i) => s + (i.balanceRemaining ?? i.grandTotal ?? 0), 0))} that require immediate attention.` : "\u2705 There are no overdue invoices at this time."}
 
 ---
 
@@ -975,12 +979,12 @@ ${topCategory ? `**Highest Revenue Category:** ${topCategory[0]} \u2014 ${fmt(Ma
 
 ## \u26A0\uFE0F POTENTIAL RISKS & OPPORTUNITIES
 
-${overdueInvoices.length > 0 ? overdueInvoices.map((inv) => `\u2022 **${inv.clientName}** \u2014 Invoice ${inv.invoiceNumber} is overdue with ${fmt(inv.balanceRemaining)} outstanding (due ${inv.dueDate})`).join("\n") : "\u2022 No overdue invoices detected \u2014 excellent cash flow discipline."}
+${overdueInvoices.length > 0 ? overdueInvoices.map((inv) => `\u2022 **${inv.clientName}** \u2014 Invoice ${inv.invoiceNumber} has ${fmt(inv.balanceRemaining ?? inv.grandTotal ?? 0)} outstanding (due ${inv.dueDate || "N/A"})`).join("\n") : "\u2022 No overdue invoices detected \u2014 excellent cash flow discipline."}
 
-${db.quotes.filter((q) => q.status === "sent").length > 0 ? `\u2022 **${db.quotes.filter((q) => q.status === "sent").length} pending quote(s)** awaiting client response \u2014 total potential value: ${fmt(db.quotes.filter((q) => q.status === "sent").reduce((s, q) => s + q.grandTotal, 0))}` : ""}
+${db.quotes.filter((q) => q.status === "sent").length > 0 ? `\u2022 **${db.quotes.filter((q) => q.status === "sent").length} pending quote(s)** awaiting client response \u2014 total potential value: ${fmt(db.quotes.filter((q) => q.status === "sent").reduce((s, q) => s + (q.grandTotal || 0), 0))}` : ""}
 
 ${(() => {
-    const underused = db.products.filter((p) => !db.invoices.some((inv) => inv.items.some((item) => item.description.toLowerCase().includes(p.name.toLowerCase().split("(")[0].trim().toLowerCase()))));
+    const underused = db.products.filter((p) => !db.invoices.some((inv) => (inv.items || []).some((item) => item.description?.toLowerCase().includes(p.name.toLowerCase().split("(")[0].trim().toLowerCase()))));
     return underused.length > 0 ? `\u2022 **Underutilized assets:** ${underused.slice(0, 3).map((p) => p.name).join(", ")} \u2014 consider promotional packages to drive bookings` : "\u2022 All product categories are actively generating revenue.";
   })()}
 
@@ -1143,139 +1147,189 @@ function generateContractTerms(params) {
 
 // src/services/ai-routes.ts
 var router10 = (0, import_express10.Router)();
-var GEMINI_ALLOWED_MODELS = [
+var GEMINI_PRIMARY_MODELS = [
   "gemini-3.5-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.6-flash",
-  "gemini-3-flash-preview",
   "gemini-3.1-flash-lite",
-  "gemini-3.1-flash-lite-preview",
   "gemini-3.1-pro-preview"
 ];
-async function callGeminiBackendAPI(prompt, history = [], context = {}) {
+var MAX_PROMPT_LEN = 4e3;
+var MAX_HISTORY_ITEMS = 20;
+var MAX_MSG_CONTENT_LEN = 8e3;
+var MAX_DOC_CONTENT_LEN = 5e4;
+var MAX_IMAGE_BASE64_BYTES = 7 * 1024 * 1024;
+var FETCH_TIMEOUT_MS = 25e3;
+function buildSystemInstruction(context) {
+  const baseInstruction = `You are Binti, an intelligent, concise, executive business data assistant for Binti Events.
+Never mention external developers, builders, creators, or names like Silvano Otieno.
+
+TONE & COMMUNICATION RULES:
+1. Direct, crisp, and analytical. Answer the specific question immediately.
+2. Do NOT use boilerplate greetings (e.g. avoid starting messages with "Good day, Virginia", "I am pleased to report", or repeating "Binti Events Management System").
+3. Strictly avoid marketing fluff, sales commentary, or unsolicited advice about "driving conversion rates from 0%" or "clean slates".
+4. When verified audit numbers are extracted from an uploaded document, stand firmly by those verified numbers. Never collapse into apologetic loops or ask the user to re-upload.
+
+FINANCIAL TERMINOLOGY DEFINITIONS:
+- Invoiced Turnover / Total Billed Volume: Sum of all invoices' TotalAmount_KES.
+- Total Cash Collected / Paid: Sum of AmountPaid_KES or recorded payments.
+- Outstanding Receivables / Balance Due: TotalAmount_KES minus AmountPaid_KES.
+
+BINTI EVENTS DATABASE SCHEMAS & AUTOMATIC DATA MAPPING:
+You already possess the complete internal database schemas. NEVER ask the user for column templates or format structures. Automatically map any uploaded table, spreadsheet, or text to these schemas:
+1. CLIENT TABLE (\`clients\`): name (required), company, phone, email, address, taxNumber.
+2. PRODUCT & INVENTORY TABLE (\`products\`): name (required), category, unitPrice, unitType, description.
+3. EXPENSE TABLE (\`expenses\`): category, description, amount, date (YYYY-MM-DD), referenceNumber.
+
+CRITICAL GROUNDING RULES FOR SPREADSHEETS & IMAGES:
+- When an image (receipt, fuel slip, invoice photo, cash voucher) is uploaded, examine the visual image directly and extract: Vendor/Supplier Name, Transaction Date, Category, Line Items, and Total Amount in KES.
+- When a SPREADSHEET ANALYSIS & AUDIT REPORT is attached in the prompt, you MUST use the exact numbers and counts stated in the report.
+- If the report states "Client Records: 8,000 clients", you MUST report 8,000 clients. If the report states "Invoices Issued: 9,000 invoices (Total Invoiced Turnover: KES 13,625,654,681)", you MUST report those exact numbers.
+- NEVER invent, round, or guess client, invoice, or revenue figures. Answer questions with exact factual numbers from the document.
+- Only propose mutation actions (e.g. import_clients, create_expense) when Virginia explicitly asks to import, save, or record data. Do not generate write buttons for simple read queries (e.g. "how many clients", "check finances").
+- REAL DATABASE MUTATIONS: You do NOT execute silent database commits through conversational text alone. NEVER claim "Status: Committed" or pretend SQL insertion scripts completed in plain text. When an import or write is requested, summarize the mapped records and instruct Virginia to click [Approve & Execute] to commit them to the live database.`;
+  const contextBlock = `
+Current Business Context:
+- Company: ${context?.companyName || "Binti Events"}
+- Currency: ${context?.currency || "KES"}
+- Total Revenue: ${context?.currency || "KES"} ${(context?.totalRevenue || 0).toLocaleString()}
+- Outstanding Receivables: ${context?.currency || "KES"} ${(context?.pendingBalance || 0).toLocaleString()}
+- Active Clients: ${context?.clientCount ?? 0}
+- Quotes Issued: ${context?.totalQuotes ?? 0}
+- Invoices Issued: ${context?.totalInvoices ?? 0}`;
+  return `${baseInstruction}
+
+${contextBlock}`;
+}
+function buildGeminiContents(prompt, history = [], document) {
+  const contents = [];
+  if (Array.isArray(history)) {
+    const sanitizedHistory = history.filter((msg) => msg && (msg.role === "user" || msg.role === "model") && typeof msg.content === "string").slice(-MAX_HISTORY_ITEMS).map((msg) => ({
+      role: msg.role === "model" ? "model" : "user",
+      content: msg.content.slice(0, MAX_MSG_CONTENT_LEN)
+    }));
+    let expectedRole = "user";
+    for (const msg of sanitizedHistory) {
+      if (msg.role === expectedRole) {
+        contents.push({
+          role: msg.role,
+          parts: [{ text: msg.content }]
+        });
+        expectedRole = expectedRole === "user" ? "model" : "user";
+      }
+    }
+  }
+  if (contents.length > 0 && contents[contents.length - 1].role === "user") {
+    contents.pop();
+  }
+  const userParts = [];
+  if (document) {
+    if (document.imageBase64) {
+      userParts.push({
+        inline_data: {
+          mime_type: document.mimeType || "image/jpeg",
+          data: document.imageBase64
+        }
+      });
+    } else if (document.binaryData?.data) {
+      userParts.push({
+        inline_data: {
+          mime_type: document.binaryData.mimeType || document.mimeType || "application/pdf",
+          data: document.binaryData.data
+        }
+      });
+    }
+  }
+  userParts.push({ text: prompt });
+  contents.push({
+    role: "user",
+    parts: userParts
+  });
+  return contents;
+}
+async function callGeminiBackendAPI(prompt, history = [], context = {}, document) {
   const apiKey2 = (process.env.GEMINI_API_KEY || process.env.GEMINI_KEY || process.env.GOOGLE_GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.VITE_GEMINI_API_KEY || process.env.API_KEY || "").trim();
   if (!apiKey2) {
     return {
       reply: null,
       statusCode: 401,
-      error: "No Gemini API Key found in server environment variables (GEMINI_API_KEY)."
+      error: "No Gemini API Key configured in server environment."
     };
   }
-  const systemInstructionText = `You are Binti, the intelligent, friendly, and expert assistant for Binti Events Corporate Suite created by Silvano Otieno.
-Your role: Provide concise, accurate, and comprehensive assistance to company admins across EVERY feature in the Binti Events platform.
-
-System Capability & Feature Access Map:
-1. Quotations Module: Create proposals, add equipment/service line items, configure discounts, export PDF quotes, track proposal statuses (Draft, Sent, Converted, Declined), and execute 1-click Quotation-to-Tax Invoice conversion.
-2. Invoices & Billing Ledger: Issue official Tax Invoices, set due dates & VAT/Tax rules, record partial & full payments, generate payment receipts, export PDF invoices, track balances, and manage overdue accounts.
-3. Payments Ledger: Record incoming transactions (M-Pesa, Bank Transfer, Cheque, Cash), track balance deductions, and issue official payment confirmation vouchers.
-4. Clients Directory: Manage corporate & individual client profiles, contact persons, phone numbers, email addresses, billing timelines, lifetime value (LTV), and account statuses.
-5. Products & Services Catalog: Maintain event equipment inventory and services (Tents & Marquees, Decor & Styling, Furniture & Seating, Audio & Lighting, Catering Gear, Consultation & Custom Packages).
-6. Reports & Business Analytics: Generate executive business health reports, revenue by service category, quote-to-invoice conversion rates, cash recovery metrics, and top revenue clients.
-7. System Settings: Configure Company Name, Tax Number/PIN, Business Address, Bank Payment Details, Currency, Default Payment Terms, Logo, and WebAuthn Biometric Security.
-
-Current Business & Sales Metrics:
-- Company Name: ${context.companyName || "Binti Events"}
-- Currency: ${context.currency || "KES"}
-- Total Realized Revenue: ${context.currency || "KES"} ${(context.totalRevenue || 0).toLocaleString()}
-- Service Category Revenue Breakdown: ${context.categoryBreakdown || "Tents, Decor, Furniture"}
-- Top Revenue Client: ${context.topClient || "N/A"}
-- Active Clients: ${context.clientCount ?? 0}
-- Quotes Issued: ${context.totalQuotes ?? 0}
-- Invoices Issued: ${context.totalInvoices ?? 0}
-- Outstanding Receivables Balance: ${context.currency || "KES"} ${(context.pendingBalance || 0).toLocaleString()}
-
-Guidelines:
-- Answer the user's specific question directly with exact context numbers where relevant.
-- Do NOT output any horizontal lines, dashes, or divider symbols (---, ***, ___).
-- Keep text clean, elegant, and executive-ready with natural line breaks and spacing.
-- Provide complete, fully fleshed-out answers. Do not cut off mid-sentence or omit details.
-- Provide step-by-step guidance for navigating or completing any task in Binti Events.
-- Keep responses concise, helpful, and professional.`;
-  const contents = [];
-  if (Array.isArray(history)) {
-    const validHistory = history.filter((msg) => msg && (msg.role === "user" || msg.role === "model") && msg.content);
-    while (validHistory.length > 0 && validHistory[0].role === "model") {
-      validHistory.shift();
+  const systemInstructionText = buildSystemInstruction(context);
+  const contents = buildGeminiContents(prompt, history, document);
+  const generationPayload = {
+    systemInstruction: { parts: [{ text: systemInstructionText }] },
+    contents,
+    generationConfig: {
+      temperature: 0.7,
+      topK: 40,
+      topP: 0.95,
+      maxOutputTokens: 4096
     }
-    validHistory.slice(-10).forEach((msg) => {
-      contents.push({
-        role: msg.role === "model" ? "model" : "user",
-        parts: [{ text: msg.content }]
-      });
-    });
-  }
-  if (contents.length > 0 && contents[contents.length - 1].role === "user") {
-    contents.pop();
-  }
-  contents.push({
-    role: "user",
-    parts: [{ text: prompt }]
-  });
-  for (const modelName of GEMINI_ALLOWED_MODELS) {
+  };
+  for (const modelName of GEMINI_PRIMARY_MODELS) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey2)}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemInstructionText }] },
-          contents,
-          generationConfig: {
-            temperature: 0.7,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 4096
-          }
-        })
+        body: JSON.stringify(generationPayload),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
       if (response.ok) {
         const data = await response.json();
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (data.promptFeedback?.blockReason) {
+          console.warn(`[Gemini] Blocked: ${data.promptFeedback.blockReason}`);
+          return { reply: null, statusCode: 400, error: "Prompt could not be processed due to safety guidelines." };
+        }
+        const candidate = data?.candidates?.[0];
+        const text = candidate?.content?.parts?.[0]?.text;
         if (text) {
           return { reply: text, statusCode: 200 };
         }
       } else {
         const errText = await response.text();
         console.warn(`[Gemini 3.x HTTP ${response.status} for ${modelName}]:`, errText);
-        if (response.status === 401 || response.status === 403) {
-          return { reply: null, statusCode: 401, error: "Gemini API Key Authentication Failed. Please verify GEMINI_API_KEY." };
+        if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+          return { reply: null, statusCode: response.status, error: "Invalid AI request parameters." };
         }
-        if (response.status === 429) {
-          return { reply: null, statusCode: 429, error: "Gemini API Rate Limit or Quota Exceeded." };
-        }
+        await new Promise((r) => setTimeout(r, 600));
       }
     } catch (err) {
-      console.error(`[Gemini 3.x Error for ${modelName}]:`, err);
+      clearTimeout(timeoutId);
+      console.error(`[Gemini 3.x Error for ${modelName}]:`, err.message);
     }
   }
-  return { reply: null, statusCode: 500, error: "Failed to generate response from allowed Gemini 3.x models." };
+  return { reply: null, statusCode: 503, error: "AI service temporarily unavailable." };
 }
 router10.post("/api/ai/chat", async (req, res) => {
   try {
-    const { prompt, history, context } = req.body;
-    if (!prompt || typeof prompt !== "string") {
-      return res.status(400).json({ success: false, error: "Prompt parameter is required and must be a string." });
+    const { prompt, history, context, document, stream } = req.body;
+    if ((!prompt || typeof prompt !== "string") && !document) {
+      return res.status(400).json({ success: false, error: "Prompt or document parameter is required." });
     }
-    const promptValidation = validateString(prompt, {
-      required: true,
-      minLength: 1,
-      maxLength: 5e3
-    });
-    if (!promptValidation.valid) {
-      return res.status(400).json({ success: false, error: promptValidation.error });
+    const cleanPrompt = (prompt || "").trim();
+    if (cleanPrompt.length > MAX_PROMPT_LEN) {
+      return res.status(400).json({ success: false, error: `Prompt exceeds maximum length of ${MAX_PROMPT_LEN} characters.` });
     }
-    const sanitizedPrompt = sanitizeString(prompt);
+    let finalPrompt = cleanPrompt;
+    if (document?.content && typeof document.content === "string") {
+      finalPrompt += `
+
+[Uploaded Document: ${document.name || "Attachment"} (${document.type || "file"})]
+${document.content.slice(0, MAX_DOC_CONTENT_LEN)}`;
+    }
     const db = await readDB();
-    const categoryRevenue = {};
-    db.invoices.forEach((inv) => {
-      (inv.items || []).forEach((item) => {
-        const desc = item.description || "";
-        const matchProd = db.products.find((p) => desc.toLowerCase().includes(p.name.toLowerCase().split(" ")[0].toLowerCase()));
-        const cat = matchProd?.category || "Decor & Event Hire";
-        categoryRevenue[cat] = (categoryRevenue[cat] || 0) + (item.amount || 0);
-      });
-    });
-    const categoryBreakdown = Object.entries(categoryRevenue).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => `${cat}: ${db.settings.currency || "KES"} ${amt.toLocaleString()}`).join(", ");
+    const totalRev = db.invoices.reduce((s, i) => s + (i.payments || []).reduce((p, pm) => p + (pm.amountPaid || 0), 0), 0);
+    const pendingBal = db.invoices.reduce((s, i) => s + (i.balanceRemaining || 0), 0);
+    const totalVolume = totalRev + pendingBal;
+    const collectionRate = totalVolume > 0 ? Math.round(totalRev / totalVolume * 100) : 100;
+    const convertedQuotes = db.quotes.filter((q) => q.status === "converted").length;
+    const conversionRate = db.quotes.length > 0 ? Math.round(convertedQuotes / db.quotes.length * 100) : 0;
     const topClient = [...db.clients].sort((a, b) => (b.revenue || 0) - (a.revenue || 0))[0];
     const enrichedContext = {
       ...context,
@@ -1283,68 +1337,105 @@ router10.post("/api/ai/chat", async (req, res) => {
       currency: db.settings.currency || context?.currency || "KES",
       clientCount: db.clients.length,
       totalQuotes: db.quotes.length,
+      convertedQuotes,
+      conversionRate,
       totalInvoices: db.invoices.length,
-      totalRevenue: db.invoices.reduce((s, i) => s + (i.payments || []).reduce((p, pm) => p + pm.amountPaid, 0), 0),
-      pendingBalance: db.invoices.reduce((s, i) => s + i.balanceRemaining, 0),
-      categoryBreakdown: categoryBreakdown || "Tents, Decor, Furniture",
+      totalRevenue: totalRev,
+      pendingBalance: pendingBal,
+      collectionRate,
       topClient: topClient ? `${topClient.name} (${db.settings.currency || "KES"} ${topClient.revenue.toLocaleString()})` : "N/A"
     };
-    const result = await callGeminiBackendAPI(sanitizedPrompt, history, enrichedContext);
-    if (result.reply) {
-      res.status(200).json({ success: true, reply: result.reply });
-      return;
+    if (stream === true || req.headers.accept?.includes("text/event-stream")) {
+      const apiKey2 = (process.env.GEMINI_API_KEY || "").trim();
+      if (!apiKey2) {
+        return res.status(500).json({ success: false, error: "GEMINI_API_KEY not configured." });
+      }
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      const systemInstructionText = buildSystemInstruction(enrichedContext);
+      const contents = buildGeminiContents(finalPrompt, history, document);
+      const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_PRIMARY_MODELS[0]}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey2)}`;
+      const upstreamRes = await fetch(streamUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemInstructionText }] },
+          contents,
+          generationConfig: { temperature: 0.7, topK: 40, topP: 0.95, maxOutputTokens: 4096 }
+        })
+      });
+      if (!upstreamRes.ok || !upstreamRes.body) {
+        res.write(`event: error
+data: ${JSON.stringify({ error: "Stream unavailable" })}
+
+`);
+        return res.end();
+      }
+      const reader = upstreamRes.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(decoder.decode(value, { stream: true }));
+      }
+      return res.end();
     }
-    const fallbackText = getSmartQueryFallback(sanitizedPrompt, enrichedContext);
-    res.json({ success: true, reply: fallbackText });
+    const result = await callGeminiBackendAPI(finalPrompt, history, enrichedContext, document);
+    if (result.reply) {
+      return res.status(200).json({ success: true, reply: result.reply });
+    }
+    const fallbackText = getSmartQueryFallback(finalPrompt, enrichedContext);
+    return res.json({ success: true, reply: fallbackText });
   } catch (error) {
     console.error("Error handling AI chat:", error);
-    res.status(500).json({ success: false, error: "Failed to process chat request. " + (error.message || "") });
+    res.status(500).json({ success: false, error: "Internal server error processing AI chat." });
   }
 });
 function getSmartQueryFallback(prompt, context = {}) {
   const p = prompt.toLowerCase();
-  if (p.includes("most money") || p.includes("highest revenue") || p.includes("top service") || p.includes("best selling") || p.includes("brought us") || p.includes("sales by service")) {
-    const list = context?.categoryBreakdown ? context.categoryBreakdown.split(", ").map((c) => `\u2022 **${c}**`).join("\n") : `\u2022 **Tents & Marquees:** KES 782,965
-\u2022 **Decor & Styling:** KES 250,000
-\u2022 **Furniture & Seating:** KES 150,000`;
-    return `Here is the revenue breakdown by service category for **${context?.companyName || "Binti Events"}**:
+  const curr = context?.currency || "KES";
+  const totalRev = context?.totalRevenue || 0;
+  const pending = context?.pendingBalance || 0;
+  const totalQuotes = context?.totalQuotes || 0;
+  const convRate = context?.conversionRate || 0;
+  if (p.includes("brief") || p.includes("summary") || p.includes("overview") || p.includes("today")) {
+    return `### \u{1F4CB} Binti Executive Business Brief
 
-${list}
+Here is your operational snapshot for **${context?.companyName || "Binti Events"}**:
 
-\u2022 **Top Client:** ${context?.topClient || "N/A"}
-\u2022 **Total Revenue Realized:** ${context?.currency || "KES"} ${(context?.totalRevenue || 0).toLocaleString()}`;
+#### \u{1F4B0} Money & Cash Flow
+\u2022 **Liquid Revenue Collected:** **${curr} ${totalRev.toLocaleString()}**
+\u2022 **Outstanding Receivables:** **${curr} ${pending.toLocaleString()}** (${context?.collectionRate ?? 100}% collection efficiency)
+
+#### \u{1F4D1} Proposals & Conversions
+\u2022 **Active Open Quotes:** **${totalQuotes}** proposals
+\u2022 **Quote Conversion Rate:** **${convRate}%**
+
+#### \u26A0\uFE0F Operational Priorities
+\u2022 ${pending > 0 ? `Follow up on outstanding invoices totaling ${curr} ${pending.toLocaleString()}.` : "All client accounts are settled and in good standing."}`;
   }
-  if (p.includes("summary") || p.includes("summarize") || p.includes("today") || p.includes("activity")) {
-    return `Here is a summary of your platform status:
-\u2022 **Active Clients:** ${context?.clientCount ?? 0}
-\u2022 **Total Quotes Issued:** ${context?.totalQuotes ?? 0}
-\u2022 **Tax Invoices Generated:** ${context?.totalInvoices ?? 0}
-\u2022 **Revenue Collected:** ${context?.currency || "KES"} ${(context?.totalRevenue || 0).toLocaleString()}
-\u2022 **Outstanding Receivables:** ${context?.currency || "KES"} ${(context?.pendingBalance || 0).toLocaleString()}
-
-All system operations and billing ledgers are currently up to date.`;
-  }
-  if (p.includes("invoice") && (p.includes("find") || p.includes("search") || p.includes("cant") || p.includes("can't") || p.includes("look") || p.includes("where") || p.includes("missing"))) {
+  if (p.includes("invoice") && (p.includes("find") || p.includes("search") || p.includes("where"))) {
     return `To locate or search for an invoice:
-1. **Global Search Bar**: Use the search input at the top header (*"Global search by client, inv #, quote #, email..."*) to search across all invoices instantly.
-2. **Invoices Module**: Click **Invoices & Ledger** in the left sidebar menu to view your list of invoices, filter by status (*Paid, Unpaid, Overdue*), or export PDF copies.`;
+1. **Global Search Bar**: Use the search input at the top header to search by invoice number or client name.
+2. **Invoices Module**: Click **Invoices & Ledger** in the left sidebar menu to filter and manage invoices.`;
   }
-  if ((p.includes("quote") || p.includes("proposal") || p.includes("quotation")) && (p.includes("find") || p.includes("search") || p.includes("cant") || p.includes("can't") || p.includes("look") || p.includes("where") || p.includes("missing"))) {
+  if ((p.includes("quote") || p.includes("proposal")) && (p.includes("find") || p.includes("search") || p.includes("where"))) {
     return `To locate a quote or proposal:
 1. **Global Search Bar**: Type the quote number (e.g. \`QT-2026-001\`) or client name in the top search bar.
-2. **Quotes Module**: Click **Quotes** in the left sidebar menu to view all active, draft, sent, or converted proposals.`;
+2. **Quotes Module**: Click **Quotes** in the left sidebar menu to view all proposal drafts.`;
   }
-  if (p.includes("term") || p.includes("payment term") || p.includes("deposit") || p.includes("policy")) {
+  if (p.includes("term") || p.includes("deposit") || p.includes("policy")) {
     return `**Standard Recommended Event Terms & Deposit Policies:**
 
-1. **50% Commitment Deposit**: Required at the time of booking to secure event date, equipment, and logistics crew.
+1. **50% Commitment Deposit**: Required at booking to secure event date and equipment.
 2. **50% Final Settlement**: Payable in full at least 7 days prior to setup and installation.
-3. **Cancellation Policy**: Cancellations within 14 days of the event date forfeit the deposit.
-4. **Site Access**: Client must guarantee ground clearance and 15A power access within 30 metres of setup site.`;
+3. **Site Access**: Client must guarantee ground clearance and electrical power access within 30 metres.
+4. **Cancellation Policy**: Cancellations within 14 days of event date forfeit deposit.`;
   }
-  return `Hello! I am **Binti**, your assistant for **${context?.companyName || "Binti Events"}**.
+  return `Hello! I am **Binti**, your AI Assistant for **${context?.companyName || "Binti Events Management System"}**.
 
-How can I help you with your quotations, billing invoices, client directory, or system settings today?`;
+How can I help you with quotations, invoices, client records, or performance analytics today?`;
 }
 router10.post("/api/ai/analyze", async (req, res) => {
   try {
@@ -1356,7 +1447,8 @@ router10.post("/api/ai/analyze", async (req, res) => {
         clientCount: db.clients.length,
         totalQuotes: db.quotes.length,
         totalInvoices: db.invoices.length,
-        totalRevenue: db.invoices.reduce((s, i) => s + (i.payments || []).reduce((p, pm) => p + pm.amountPaid, 0), 0),
+        totalRevenue: db.invoices.reduce((s, i) => s + (i.payments || []).reduce((p, pm) => p + (pm.amountPaid || 0), 0), 0),
+        pendingBalance: db.invoices.reduce((s, i) => s + (i.balanceRemaining || 0), 0),
         currency: db.settings.currency
       }
     );
