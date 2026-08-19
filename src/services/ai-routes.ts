@@ -45,10 +45,11 @@ FINANCIAL TERMINOLOGY DEFINITIONS:
 - Outstanding Receivables / Balance Due: TotalAmount_KES minus AmountPaid_KES.
 
 BINTI EVENTS DATABASE SCHEMAS & AUTOMATIC DATA MAPPING:
-You already possess the complete internal database schemas. NEVER ask the user for column templates or format structures. Automatically map any uploaded table, spreadsheet, or text to these schemas:
+You have complete visibility into the schemas below as well as the Raw Column Headers provided in the [Extracted Table] blocks. When the user asks about column headers or schemas, inspect the exact Raw Column Headers and map them directly into Binti Events schemas:
 1. CLIENT TABLE (\`clients\`): name (required), company, phone, email, address, taxNumber.
 2. PRODUCT & INVENTORY TABLE (\`products\`): name (required), category, unitPrice, unitType, description.
 3. EXPENSE TABLE (\`expenses\`): category, description, amount, date (YYYY-MM-DD), referenceNumber.
+4. QUOTE & INVOICE SCHEMAS: quoteNumber, invoiceNumber, clientName, items, subtotal, taxAmount, totalAmount, amountPaid, balanceDue, status.
 
 CRITICAL GROUNDING RULES FOR SPREADSHEETS & IMAGES:
 - When an image (receipt, fuel slip, invoice photo, cash voucher) is uploaded, examine the visual image directly and extract: Vendor/Supplier Name, Transaction Date, Category, Line Items, and Total Amount in KES.
@@ -225,9 +226,26 @@ router.post('/api/ai/chat', async (req, res) => {
       return res.status(400).json({ success: false, error: `Prompt exceeds maximum length of ${MAX_PROMPT_LEN} characters.` });
     }
 
-    let finalPrompt = cleanPrompt;
-    if (document?.content && typeof document.content === 'string') {
+    let finalPrompt = (prompt || '').trim();
+    if (document && document.content) {
       finalPrompt += `\n\n[Uploaded Document: ${document.name || 'Attachment'} (${document.type || 'file'})]\n${document.content.slice(0, MAX_DOC_CONTENT_LEN)}`;
+    }
+
+    if (document?.tables && Array.isArray(document.tables)) {
+      for (const table of document.tables) {
+        finalPrompt += `\n\n[Extracted Table / Worksheet: "${table.name || 'Sheet'}"]\n`;
+        finalPrompt += `Raw Column Headers: ${table.headers?.join(' | ') || 'N/A'}\n`;
+        if (table.rows && table.rows.length > 0) {
+          finalPrompt += `Sample Rows (first 5):\n`;
+          for (const row of table.rows.slice(0, 5)) {
+            finalPrompt += (Array.isArray(row) ? row.map((cell: any) => String(cell ?? '')).join(' | ') : JSON.stringify(row)) + '\n';
+          }
+        }
+      }
+    }
+
+    if (document?.financialDoc) {
+      finalPrompt += `\n\n[Extracted Financial Document Details]:\n${JSON.stringify(document.financialDoc, null, 2)}`;
     }
 
     // Hydrate Genuine Business Context directly from Server DB

@@ -274,6 +274,24 @@ serve(async (req) => {
       finalPrompt += `\n\n[Uploaded Document: ${document.name || 'Attachment'} (${document.type || 'file'})]\n${docContent}`;
     }
 
+    // Explicitly serialize structured tables so Gemini has full visibility into all column headers
+    if (document?.tables && Array.isArray(document.tables)) {
+      for (const table of document.tables) {
+        finalPrompt += `\n\n[Extracted Table / Worksheet: "${table.name || 'Sheet'}"]\n`;
+        finalPrompt += `Raw Column Headers: ${table.headers?.join(' | ') || 'N/A'}\n`;
+        if (table.rows && table.rows.length > 0) {
+          finalPrompt += `Sample Rows (first 5):\n`;
+          for (const row of table.rows.slice(0, 5)) {
+            finalPrompt += (Array.isArray(row) ? row.map((cell: any) => String(cell ?? '')).join(' | ') : JSON.stringify(row)) + '\n';
+          }
+        }
+      }
+    }
+
+    if (document?.financialDoc) {
+      finalPrompt += `\n\n[Extracted Financial Document Details]:\n${JSON.stringify(document.financialDoc, null, 2)}`;
+    }
+
     // Authenticate & Hydrate genuine business data from Supabase DB
     const authHeader = req.headers.get("Authorization");
     const verifiedContext = await hydrateBusinessContext(authHeader);
@@ -294,10 +312,11 @@ FINANCIAL TERMINOLOGY DEFINITIONS:
 - Outstanding Receivables / Balance Due: TotalAmount_KES minus AmountPaid_KES.
 
 BINTI EVENTS DATABASE SCHEMAS & AUTOMATIC DATA MAPPING:
-You already possess the complete internal database schemas. NEVER ask the user for column templates or format structures. Automatically map any uploaded table, spreadsheet, or text to these schemas:
+You have complete visibility into the schemas below as well as the Raw Column Headers provided in the [Extracted Table] blocks. When the user asks about column headers or schemas, inspect the exact Raw Column Headers and map them directly into Binti Events schemas:
 1. CLIENT TABLE (\`clients\`): name (required), company, phone, email, address, taxNumber.
 2. PRODUCT & INVENTORY TABLE (\`products\`): name (required), category, unitPrice, unitType, description.
 3. EXPENSE TABLE (\`expenses\`): category, description, amount, date (YYYY-MM-DD), referenceNumber.
+4. QUOTE & INVOICE SCHEMAS: quoteNumber, invoiceNumber, clientName, items, subtotal, taxAmount, totalAmount, amountPaid, balanceDue, status.`;
 
 CRITICAL GROUNDING RULES:
 1. When a SPREADSHEET ANALYSIS & AUDIT REPORT is attached in the prompt, you MUST use the exact numbers and counts stated in the report.
