@@ -25,14 +25,14 @@ const GEMINI_ALLOWED_MODELS = [
 /**
  * Invokes Google Gemini REST API targeting strictly allowed Gemini 3.x models
  */
-async function callGeminiBackendAPI(prompt: string, history: any[] = [], context: any = {}): Promise<CallGeminiResult> {
+async function callGeminiBackendAPI(prompt: string, history: any[] = [], context: any = {}, document?: any): Promise<CallGeminiResult> {
   const apiKey = (
     process.env.GEMINI_API_KEY || 
     process.env.GEMINI_KEY || 
     process.env.GOOGLE_GEMINI_API_KEY || 
-    process.env.GOOGLE_API_KEY ||
-    process.env.VITE_GEMINI_API_KEY ||
-    process.env.API_KEY ||
+    process.env.GOOGLE_API_KEY || 
+    process.env.VITE_GEMINI_API_KEY || 
+    process.env.API_KEY || 
     ''
   ).trim();
 
@@ -64,7 +64,8 @@ You already possess the complete internal database schemas. NEVER ask the user f
 2. PRODUCT & INVENTORY TABLE (\`products\`): name (required), category, unitPrice, unitType, description.
 3. EXPENSE TABLE (\`expenses\`): category, description, amount, date (YYYY-MM-DD), referenceNumber.
 
-CRITICAL GROUNDING RULES FOR SPREADSHEETS:
+CRITICAL GROUNDING RULES FOR SPREADSHEETS & IMAGES:
+- When an image (receipt, fuel slip, invoice photo, cash voucher) is uploaded, examine the visual image directly and extract: Vendor/Supplier Name, Transaction Date, Category, Line Items, and Total Amount in KES.
 - When a SPREADSHEET ANALYSIS & AUDIT REPORT is attached in the prompt, you MUST use the exact numbers and counts stated in the report.
 - If the report states "Client Records: 8,000 clients", you MUST report 8,000 clients. If the report states "Invoices Issued: 9,000 invoices (Total Invoiced Turnover: KES 13,625,654,681)", you MUST report those exact numbers.
 - NEVER invent, round, or guess client, invoice, or revenue figures. Answer questions with exact factual numbers from the document.
@@ -89,9 +90,29 @@ CRITICAL GROUNDING RULES FOR SPREADSHEETS:
     contents.pop();
   }
 
+  const userParts: any[] = [];
+  if (document) {
+    if (document.imageBase64) {
+      userParts.push({
+        inline_data: {
+          mime_type: document.mimeType || "image/jpeg",
+          data: document.imageBase64
+        }
+      });
+    } else if (document.binaryData?.data) {
+      userParts.push({
+        inline_data: {
+          mime_type: document.binaryData.mimeType || document.mimeType || "application/pdf",
+          data: document.binaryData.data
+        }
+      });
+    }
+  }
+  userParts.push({ text: prompt });
+
   contents.push({
     role: "user",
-    parts: [{ text: prompt }]
+    parts: userParts
   });
 
   for (const modelName of GEMINI_ALLOWED_MODELS) {
@@ -187,7 +208,7 @@ router.post('/api/ai/chat', async (req, res) => {
       topClient: topClient ? `${topClient.name} (${db.settings.currency || 'KES'} ${topClient.revenue.toLocaleString()})` : 'N/A'
     };
 
-    const result = await callGeminiBackendAPI(sanitizedPrompt, history, enrichedContext);
+    const result = await callGeminiBackendAPI(sanitizedPrompt, history, enrichedContext, document);
     
     if (result.reply) {
       res.status(200).json({ success: true, reply: result.reply });

@@ -98,9 +98,29 @@ Guidelines:
       contents.pop();
     }
 
+    const userParts: any[] = [];
+    if (document) {
+      if (document.imageBase64) {
+        userParts.push({
+          inline_data: {
+            mime_type: document.mimeType || "image/jpeg",
+            data: document.imageBase64
+          }
+        });
+      } else if (document.binaryData?.data) {
+        userParts.push({
+          inline_data: {
+            mime_type: document.binaryData.mimeType || document.mimeType || "application/pdf",
+            data: document.binaryData.data
+          }
+        });
+      }
+    }
+    userParts.push({ text: finalPrompt });
+
     contents.push({
       role: "user",
-      parts: [{ text: finalPrompt }]
+      parts: userParts
     });
 
     for (const modelName of GEMINI_ALLOWED_MODELS) {
