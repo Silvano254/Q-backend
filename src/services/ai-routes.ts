@@ -12,11 +12,11 @@ interface CallGeminiResult {
 }
 
 const GEMINI_PRIMARY_MODELS = [
-  "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-3.6-flash",
-  "gemini-3.1-flash-lite",
-  "gemini-3.1-pro-preview"
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+  "gemini-1.5-pro",
+  "gemini-2.5-pro"
 ];
 
 const MAX_PROMPT_LEN = 4000;
@@ -194,10 +194,10 @@ async function callGeminiBackendAPI(prompt: string, history: any[] = [], context
         }
       } else {
         const errText = await response.text();
-        console.warn(`[Gemini 3.x HTTP ${response.status} for ${modelName}]:`, errText);
+        console.warn(`[Gemini HTTP ${response.status} for ${modelName}]:`, errText);
         
-        if (response.status >= 400 && response.status < 500 && response.status !== 429) {
-          return { reply: null, statusCode: response.status, error: "Invalid AI request parameters." };
+        if (response.status === 400) {
+          return { reply: null, statusCode: 400, error: "Invalid AI request parameters." };
         }
 
         await new Promise(r => setTimeout(r, 600));
