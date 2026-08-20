@@ -113,25 +113,32 @@ async function fetchLiveMetrics(supabase: any, userId?: string): Promise<LiveMet
   };
 
   try {
+    // 1. Company Settings (company_settings table)
     try {
       const { data: settings } = await supabase
-        .from("settings")
-        .select("company_name, companyName, currency")
+        .from("company_settings")
+        .select("company_name, currency")
         .limit(1)
         .maybeSingle();
       if (settings) {
-        metrics.companyName = settings.company_name || settings.companyName || "Binti Events";
+        metrics.companyName = settings.company_name || "Binti Events";
         metrics.currency = settings.currency || "KES";
       }
-    } catch {}
+    } catch (e) {
+      console.warn("[ai-chat] company_settings fetch:", e);
+    }
 
+    // 2. Active Clients (clients table)
     try {
-      let clientQuery = supabase.from("clients").select("*", { count: "exact", head: true });
+      let clientQuery = supabase.from("clients").select("id", { count: "exact", head: true });
       if (userId) clientQuery = clientQuery.eq("user_id", userId);
-      const { count: clientCount } = await clientQuery;
-      metrics.clientCount = clientCount || 0;
-    } catch {}
+      const { count } = await clientQuery;
+      metrics.clientCount = count || 0;
+    } catch (e) {
+      console.warn("[ai-chat] clients count fetch:", e);
+    }
 
+    // 3. Quotes (quotes table)
     try {
       let quoteQuery = supabase.from("quotes").select("id, status");
       if (userId) quoteQuery = quoteQuery.eq("user_id", userId);
@@ -141,42 +148,55 @@ async function fetchLiveMetrics(supabase: any, userId?: string): Promise<LiveMet
         const converted = quotes.filter((q: any) => q.status === "converted").length;
         metrics.conversionRate = quotes.length > 0 ? Math.round((converted / quotes.length) * 100) : 0;
       }
-    } catch {}
+    } catch (e) {
+      console.warn("[ai-chat] quotes fetch:", e);
+    }
 
+    // 4. Invoices (invoices table: grand_total, balance_remaining, status)
     try {
-      let invQuery = supabase.from("invoices").select("total_amount, grand_total, amount_paid, status, balance_remaining");
+      let invQuery = supabase.from("invoices").select("id, grand_total, balance_remaining, status");
       if (userId) invQuery = invQuery.eq("user_id", userId);
       const { data: invoices } = await invQuery;
 
       if (invoices && invoices.length > 0) {
         metrics.totalInvoices = invoices.length;
-        metrics.totalRevenue = invoices.reduce((s: number, r: any) => s + Number(r.total_amount ?? r.grand_total ?? 0), 0);
-        metrics.totalCashCollected = invoices.reduce((s: number, r: any) => s + Number(r.amount_paid ?? 0), 0);
-        metrics.pendingBalance = invoices.reduce((s: number, r: any) => s + Number(r.balance_remaining ?? 0), 0);
+        metrics.totalRevenue = invoices.reduce((s: number, r: any) => s + Number(r.grand_total || 0), 0);
+        metrics.pendingBalance = invoices.reduce((s: number, r: any) => s + Number(r.balance_remaining || 0), 0);
 
         const overdue = invoices.filter((i: any) => i.status === "overdue" || (Number(i.balance_remaining) > 0 && i.status !== "paid"));
         metrics.overdueInvoiceCount = overdue.length;
-        metrics.overdueBalance = overdue.reduce((s: number, r: any) => s + Number(r.balance_remaining ?? 0), 0);
-
-        metrics.collectionRate = metrics.totalRevenue > 0
-          ? Math.round((metrics.totalCashCollected / metrics.totalRevenue) * 100)
-          : 100;
+        metrics.overdueBalance = overdue.reduce((s: number, r: any) => s + Number(r.balance_remaining || 0), 0);
       }
-    } catch {}
+    } catch (e) {
+      console.warn("[ai-chat] invoices fetch:", e);
+    }
 
+    // 5. Cash Collected from Payments (payments table: amount_paid)
     try {
-      let expQuery = supabase.from("expenses").select("*", { count: "exact", head: true });
-      if (userId) expQuery = expQuery.eq("user_id", userId);
-      const { count: expenseCount } = await expQuery;
-      metrics.totalExpenses = expenseCount || 0;
-    } catch {}
+      let payQuery = supabase.from("payments").select("amount_paid");
+      if (userId) payQuery = payQuery.eq("user_id", userId);
+      const { data: payments } = await payQuery;
 
+      if (payments && payments.length > 0) {
+        metrics.totalCashCollected = payments.reduce((s: number, p: any) => s + Number(p.amount_paid || 0), 0);
+      }
+
+      metrics.collectionRate = metrics.totalRevenue > 0
+        ? Math.round((metrics.totalCashCollected / metrics.totalRevenue) * 100)
+        : 100;
+    } catch (e) {
+      console.warn("[ai-chat] payments fetch:", e);
+    }
+
+    // 6. Products Catalog (products table)
     try {
-      let prodQuery = supabase.from("products").select("*", { count: "exact", head: true });
+      let prodQuery = supabase.from("products").select("id", { count: "exact", head: true });
       if (userId) prodQuery = prodQuery.eq("user_id", userId);
-      const { count: productCount } = await prodQuery;
-      metrics.productCount = productCount || 0;
-    } catch {}
+      const { count } = await prodQuery;
+      metrics.productCount = count || 0;
+    } catch (e) {
+      console.warn("[ai-chat] products fetch:", e);
+    }
 
   } catch (err) {
     console.error("[ai-chat] Live metrics fetch failed:", err);
