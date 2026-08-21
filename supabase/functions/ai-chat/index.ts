@@ -111,128 +111,107 @@ async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
   };
 
   try {
-    // 1. Company Settings (try company_settings, fallback to settings)
+    if (!supabase) return metrics;
+
+    // 1. Settings (company_settings or settings)
     try {
-      let { data: settings } = await supabase
-        .from("company_settings")
-        .select("company_name, currency")
-        .limit(1)
-        .maybeSingle();
-
+      const res = await supabase.from("company_settings").select("company_name, currency").limit(1).maybeSingle();
+      let settings = res?.data;
       if (!settings) {
-        const { data: altSettings } = await supabase
-          .from("settings")
-          .select("*")
-          .limit(1)
-          .maybeSingle();
-        settings = altSettings;
+        const altRes = await supabase.from("settings").select("*").limit(1).maybeSingle();
+        settings = altRes?.data;
       }
-
       if (settings) {
         metrics.companyName = settings.company_name || settings.companyName || "Binti Events";
         metrics.currency = settings.currency || "KES";
       }
     } catch (e) {
-      console.warn("[ai-chat] settings fetch warning:", e);
+      console.warn("[ai-chat] settings warning:", e);
     }
 
     // 2. Total Clients
     try {
-      const { count } = await supabase
-        .from("clients")
-        .select("id", { count: "exact", head: true });
+      const { count } = await supabase.from("clients").select("id", { count: "exact", head: true });
       metrics.clientCount = count || 0;
     } catch (e) {
-      console.warn("[ai-chat] clients count warning:", e);
+      console.warn("[ai-chat] clients warning:", e);
     }
 
     // 3. Quotes & Conversion
     try {
-      const { data: quotes } = await supabase
-        .from("quotes")
-        .select("id, status");
-      if (quotes && quotes.length > 0) {
+      const { data: quotes } = await supabase.from("quotes").select("id, status");
+      if (Array.isArray(quotes) && quotes.length > 0) {
         metrics.totalQuotes = quotes.length;
         const converted = quotes.filter((q: any) => {
-          const st = (q.status || "").toLowerCase();
+          const st = (q?.status || "").toLowerCase();
           return st === "converted" || st === "accepted" || st === "approved";
         }).length;
         metrics.conversionRate = Math.round((converted / quotes.length) * 100);
       }
     } catch (e) {
-      console.warn("[ai-chat] quotes fetch warning:", e);
+      console.warn("[ai-chat] quotes warning:", e);
     }
 
     // 4. Invoices (grand_total, balance_remaining, due_date, status)
     try {
-      const { data: invoices } = await supabase
-        .from("invoices")
-        .select("*");
-      
-      if (invoices && invoices.length > 0) {
+      const { data: invoices } = await supabase.from("invoices").select("*");
+      if (Array.isArray(invoices) && invoices.length > 0) {
         metrics.totalInvoices = invoices.length;
-        
+
         metrics.totalRevenue = invoices.reduce((s: number, r: any) => {
-          const val = r.grand_total ?? r.grandTotal ?? r.total_amount ?? r.totalAmount ?? r.total ?? 0;
+          const val = r?.grand_total ?? r?.grandTotal ?? r?.total_amount ?? r?.totalAmount ?? r?.total ?? 0;
           return s + Number(val || 0);
         }, 0);
 
         metrics.pendingBalance = invoices.reduce((s: number, r: any) => {
-          const bal = r.balance_remaining ?? r.balanceRemaining ?? r.balanceDue ?? 0;
+          const bal = r?.balance_remaining ?? r?.balanceRemaining ?? r?.balanceDue ?? 0;
           return s + Number(bal || 0);
         }, 0);
 
         const now = new Date();
         const overdue = invoices.filter((i: any) => {
-          const status = String(i.status || "").toLowerCase();
+          const status = String(i?.status || "").toLowerCase();
           if (status === "paid") return false;
           if (status === "overdue") return true;
 
-          const balance = Number(i.balance_remaining ?? i.balanceRemaining ?? i.balanceDue ?? 0);
-          const rawDue = i.due_date ?? i.dueDate;
+          const balance = Number(i?.balance_remaining ?? i?.balanceRemaining ?? i?.balanceDue ?? 0);
+          const rawDue = i?.due_date ?? i?.dueDate;
           const dueDate = rawDue ? new Date(rawDue) : null;
           return balance > 0 && !!dueDate && !isNaN(dueDate.getTime()) && dueDate < now;
         });
 
         metrics.overdueInvoiceCount = overdue.length;
         metrics.overdueBalance = overdue.reduce((s: number, r: any) => {
-          return s + Number(r.balance_remaining ?? r.balanceRemaining ?? r.balanceDue ?? 0);
+          return s + Number(r?.balance_remaining ?? r?.balanceRemaining ?? r?.balanceDue ?? 0);
         }, 0);
       }
     } catch (e) {
-      console.warn("[ai-chat] invoices fetch warning:", e);
+      console.warn("[ai-chat] invoices warning:", e);
     }
 
     // 5. Payments (authoritative source: payments table)
     try {
-      const { data: payments } = await supabase
-        .from("payments")
-        .select("amount_paid");
-
-      metrics.totalCashCollected = (payments || []).reduce(
-        (sum: number, p: any) => sum + Number(p.amount_paid || 0),
-        0
-      );
-
+      const { data: payments } = await supabase.from("payments").select("amount_paid");
+      if (Array.isArray(payments) && payments.length > 0) {
+        metrics.totalCashCollected = payments.reduce((sum: number, p: any) => sum + Number(p?.amount_paid || 0), 0);
+      }
       metrics.collectionRate = metrics.totalRevenue > 0
         ? Math.round((metrics.totalCashCollected / metrics.totalRevenue) * 100)
         : 100;
     } catch (e) {
-      console.warn("[ai-chat] payments fetch warning:", e);
+      console.warn("[ai-chat] payments warning:", e);
     }
 
     // 6. Products Catalog
     try {
-      const { count } = await supabase
-        .from("products")
-        .select("id", { count: "exact", head: true });
+      const { count } = await supabase.from("products").select("id", { count: "exact", head: true });
       metrics.productCount = count || 0;
     } catch (e) {
-      console.warn("[ai-chat] products fetch warning:", e);
+      console.warn("[ai-chat] products warning:", e);
     }
 
   } catch (err) {
-    console.error("[ai-chat] Live metrics fetch error:", err);
+    console.error("[ai-chat] Live metrics fetch warning:", err);
   }
 
   return metrics;
@@ -243,6 +222,8 @@ async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
  */
 function extractServerActions(prompt: string, document?: any): any[] {
   const actions: any[] = [];
+  const p = prompt.toLowerCase();
+
   // Negative intent check: phrases like "don't save", "do not import", "just analyze", "read only" force write intent off
   const hasNegativeIntent = /\b(don'?t|do not|never|no need to|without|just|only)\s+(import|save|store|record|add|create|write|insert|commit|modifying|changing)\b|\b(read[\s-]only|just analyze|only analyze|don'?t save|do not save|without saving|without importing|no action)\b/i.test(p);
 
@@ -325,6 +306,18 @@ serve(async (req) => {
     );
   }
 
+  // 1. Immediate Authentication Guard before any heavy operations
+  const authHeader = req.headers.get("Authorization") || "";
+  const apikeyHeader = req.headers.get("apikey") || "";
+  const incomingToken = (authHeader.replace(/^Bearer\s*/i, "") || apikeyHeader).trim();
+
+  if (!incomingToken) {
+    return new Response(
+      JSON.stringify({ success: false, error: "Unauthorized. Authorization header or apikey is required." }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 401 }
+    );
+  }
+
   try {
     const rawBody = await req.json().catch(() => null);
     if (!rawBody) {
@@ -339,7 +332,7 @@ serve(async (req) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || Deno.env.get("SUPABASE_ANON_KEY") || "";
-    const apiKey = (Deno.env.get("GEMINI_API_KEY") || "").trim();
+    const apiKey = (Deno.env.get("GEMINI_API_KEY") || Deno.env.get("GOOGLE_AI_API_KEY") || Deno.env.get("GEMINI_KEY") || "").trim();
 
     if (!supabaseUrl || !supabaseServiceKey) {
       console.error("[ai-chat] Missing Supabase credentials");
@@ -352,20 +345,8 @@ serve(async (req) => {
     if (!apiKey) {
       console.error("[ai-chat] Missing GEMINI_API_KEY");
       return new Response(
-        JSON.stringify({ success: false, error: "AI service configuration error." }),
+        JSON.stringify({ success: false, error: "AI service configuration error. Missing GEMINI_API_KEY secret." }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 500 }
-      );
-    }
-
-    const authHeader = req.headers.get("Authorization") || "";
-    const apikeyHeader = req.headers.get("apikey") || "";
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || "";
-    const incomingToken = (authHeader.replace(/^Bearer\s+/i, "") || apikeyHeader).trim();
-
-    if (!incomingToken) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Unauthorized. Authorization header or apikey is required." }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 401 }
       );
     }
 
