@@ -243,10 +243,12 @@ async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
  */
 function extractServerActions(prompt: string, document?: any): any[] {
   const actions: any[] = [];
-  const p = prompt.toLowerCase();
+  // Negative intent check: phrases like "don't save", "do not import", "just analyze", "read only" force write intent off
+  const hasNegativeIntent = /\b(don'?t|do not|never|no need to|without|just|only)\s+(import|save|store|record|add|create|write|insert|commit|modifying|changing)\b|\b(read[\s-]only|just analyze|only analyze|don'?t save|do not save|without saving|without importing|no action)\b/i.test(p);
 
-  // Intent check: User must explicitly request write/import/save/record/execute
-  const hasWriteIntent = /import|save|write|record|commit|insert|add to db|create expense|create invoice|create quote|structure into db|restructure/i.test(p);
+  // Positive write intent check
+  const hasPositiveWriteIntent = /\b(import|save|store|record|commit|insert|add to db|create expense|create invoice|create quote|structure into db|restructure)\b/i.test(p);
+  const hasWriteIntent = hasPositiveWriteIntent && !hasNegativeIntent;
   const isActionPrompt = /filter overdue|check overdue|open quote|view client/i.test(p);
 
   if (!hasWriteIntent && !isActionPrompt) {
