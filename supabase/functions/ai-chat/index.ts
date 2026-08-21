@@ -86,7 +86,6 @@ interface LiveMetrics {
   totalRevenue: number;
   totalCashCollected: number;
   pendingBalance: number;
-  totalExpenses: number;
   collectionRate: number;
   conversionRate: number;
   overdueInvoiceCount: number;
@@ -94,7 +93,7 @@ interface LiveMetrics {
   productCount: number;
 }
 
-async function fetchLiveMetrics(supabase: any, userId?: string): Promise<LiveMetrics> {
+async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
   const metrics: LiveMetrics = {
     companyName: "Binti Events",
     currency: "KES",
@@ -104,7 +103,6 @@ async function fetchLiveMetrics(supabase: any, userId?: string): Promise<LiveMet
     totalRevenue: 0,
     totalCashCollected: 0,
     pendingBalance: 0,
-    totalExpenses: 0,
     collectionRate: 100,
     conversionRate: 0,
     overdueInvoiceCount: 0,
@@ -113,115 +111,162 @@ async function fetchLiveMetrics(supabase: any, userId?: string): Promise<LiveMet
   };
 
   try {
-    // 1. Settings (settings table)
+    // 1. Company Settings (try company_settings, fallback to settings)
     try {
-      const { data: settings } = await supabase
-        .from("settings")
-        .select("*")
+      let { data: settings } = await supabase
+        .from("company_settings")
+        .select("company_name, currency")
         .limit(1)
         .maybeSingle();
+
+      if (!settings) {
+        const { data: altSettings } = await supabase
+          .from("settings")
+          .select("*")
+          .limit(1)
+          .maybeSingle();
+        settings = altSettings;
+      }
+
       if (settings) {
-        metrics.companyName = settings.companyName || settings.company_name || "Binti Events";
+        metrics.companyName = settings.company_name || settings.companyName || "Binti Events";
         metrics.currency = settings.currency || "KES";
       }
     } catch (e) {
-      console.warn("[ai-chat] settings fetch:", e);
+      console.warn("[ai-chat] settings fetch warning:", e);
     }
 
-    // 2. Active Clients (clients table)
+    // 2. Total Clients
     try {
-      let clientQuery = supabase.from("clients").select("id", { count: "exact", head: true });
-      if (userId) clientQuery = clientQuery.eq("user_id", userId);
-      const { count } = await clientQuery;
+      const { count } = await supabase
+        .from("clients")
+        .select("id", { count: "exact", head: true });
       metrics.clientCount = count || 0;
     } catch (e) {
-      console.warn("[ai-chat] clients count fetch:", e);
+      console.warn("[ai-chat] clients count warning:", e);
     }
 
-    // 3. Quotes (quotes table)
+    // 3. Quotes & Conversion
     try {
-      let quoteQuery = supabase.from("quotes").select("*");
-      if (userId) quoteQuery = quoteQuery.eq("user_id", userId);
-      const { data: quotes } = await quoteQuery;
-      if (quotes) {
+      const { data: quotes } = await supabase
+        .from("quotes")
+        .select("id, status");
+      if (quotes && quotes.length > 0) {
         metrics.totalQuotes = quotes.length;
-        const converted = quotes.filter((q: any) => (q.status || "").toLowerCase() === "converted").length;
-        metrics.conversionRate = quotes.length > 0 ? Math.round((converted / quotes.length) * 100) : 0;
+        const converted = quotes.filter((q: any) => {
+          const st = (q.status || "").toLowerCase();
+          return st === "converted" || st === "accepted" || st === "approved";
+        }).length;
+        metrics.conversionRate = Math.round((converted / quotes.length) * 100);
       }
     } catch (e) {
-      console.warn("[ai-chat] quotes fetch:", e);
+      console.warn("[ai-chat] quotes fetch warning:", e);
     }
 
-    // 4. Invoices (invoices table - reads all invoice fields seamlessly)
+    // 4. Invoices (grand_total, balance_remaining, due_date, status)
+    let invoicesList: any[] = [];
     try {
-      let invQuery = supabase.from("invoices").select("*");
-      if (userId) invQuery = invQuery.eq("user_id", userId);
-      const { data: invoices } = await invQuery;
-
+      const { data: invoices } = await supabase
+        .from("invoices")
+        .select("*");
+      
       if (invoices && invoices.length > 0) {
+        invoicesList = invoices;
         metrics.totalInvoices = invoices.length;
         
         metrics.totalRevenue = invoices.reduce((s: number, r: any) => {
-          const val = r.totalAmount ?? r.total ?? r.grandTotal ?? r.grand_total ?? r.subtotal ?? 0;
+          const val = r.grand_total ?? r.grandTotal ?? r.total_amount ?? r.totalAmount ?? r.total ?? 0;
           return s + Number(val || 0);
         }, 0);
 
-        metrics.totalCashCollected = invoices.reduce((s: number, r: any) => {
-          let paid = r.amountPaid ?? r.amount_paid ?? 0;
-          if (!paid && Array.isArray(r.payments)) {
-            paid = r.payments.reduce((sum: number, p: any) => sum + Number(p.amountPaid ?? p.amount_paid ?? p.amount ?? 0), 0);
-          }
-          return s + Number(paid || 0);
-        }, 0);
-
         metrics.pendingBalance = invoices.reduce((s: number, r: any) => {
-          const bal = r.balanceRemaining ?? r.balance_remaining ?? r.balanceDue ?? r.balance ?? 0;
+          const bal = r.balance_remaining ?? r.balanceRemaining ?? r.balanceDue ?? 0;
           return s + Number(bal || 0);
         }, 0);
 
+        const now = new Date();
         const overdue = invoices.filter((i: any) => {
           const st = (i.status || "").toLowerCase();
-          const bal = Number(i.balanceRemaining ?? i.balance_remaining ?? i.balanceDue ?? 0);
-          return st === "overdue" || (bal > 0 && st !== "paid");
+          const bal = Number(i.balance_remaining ?? i.balanceRemaining ?? i.balanceDue ?? 0);
+          const rawDue = i.due_date ?? i.dueDate;
+          const dueDate = rawDue ? new Date(rawDue) : null;
+          const isDatePast = dueDate !== null && !isNaN(dueDate.getTime()) && dueDate < now;
+          return st === "overdue" || (bal > 0 && isDatePast);
         });
-        metrics.overdueInvoiceCount = overdue.length;
-        metrics.overdueBalance = overdue.reduce((s: number, r: any) => s + Number(r.balanceRemaining ?? r.balance_remaining ?? r.balanceDue ?? 0), 0);
 
-        metrics.collectionRate = metrics.totalRevenue > 0
-          ? Math.round((metrics.totalCashCollected / metrics.totalRevenue) * 100)
-          : 100;
+        metrics.overdueInvoiceCount = overdue.length;
+        metrics.overdueBalance = overdue.reduce((s: number, r: any) => {
+          return s + Number(r.balance_remaining ?? r.balanceRemaining ?? r.balanceDue ?? 0);
+        }, 0);
       }
     } catch (e) {
-      console.warn("[ai-chat] invoices fetch:", e);
+      console.warn("[ai-chat] invoices fetch warning:", e);
     }
 
-    // 5. Products Catalog (products table)
+    // 5. Payments (payments table: amount_paid)
     try {
-      let prodQuery = supabase.from("products").select("id", { count: "exact", head: true });
-      if (userId) prodQuery = prodQuery.eq("user_id", userId);
-      const { count } = await prodQuery;
+      const { data: payments } = await supabase
+        .from("payments")
+        .select("amount_paid");
+
+      if (payments && payments.length > 0) {
+        metrics.totalCashCollected = payments.reduce((s: number, p: any) => s + Number(p.amount_paid || 0), 0);
+      } else if (invoicesList.length > 0) {
+        // Fallback calculation from invoice paid fields
+        metrics.totalCashCollected = invoicesList.reduce((s: number, r: any) => {
+          let paid = r.amount_paid ?? r.amountPaid ?? 0;
+          if (!paid && Array.isArray(r.payments)) {
+            paid = r.payments.reduce((sum: number, p: any) => sum + Number(p.amount_paid ?? p.amountPaid ?? 0), 0);
+          }
+          return s + Number(paid || 0);
+        }, 0);
+      }
+
+      metrics.collectionRate = metrics.totalRevenue > 0
+        ? Math.round((metrics.totalCashCollected / metrics.totalRevenue) * 100)
+        : 100;
+    } catch (e) {
+      console.warn("[ai-chat] payments fetch warning:", e);
+    }
+
+    // 6. Products Catalog
+    try {
+      const { count } = await supabase
+        .from("products")
+        .select("id", { count: "exact", head: true });
       metrics.productCount = count || 0;
     } catch (e) {
-      console.warn("[ai-chat] products fetch:", e);
+      console.warn("[ai-chat] products fetch warning:", e);
     }
 
   } catch (err) {
-    console.error("[ai-chat] Live metrics fetch failed:", err);
+    console.error("[ai-chat] Live metrics fetch error:", err);
   }
 
   return metrics;
 }
 
+/**
+ * Action cards ONLY generated if the user explicitly requested a database write or mutation action.
+ */
 function extractServerActions(prompt: string, document?: any): any[] {
   const actions: any[] = [];
   const p = prompt.toLowerCase();
 
-  if (document) {
+  // Intent check: User must explicitly request write/import/save/record/execute
+  const hasWriteIntent = /import|save|write|record|commit|insert|add to db|create expense|create invoice|create quote|structure into db|restructure/i.test(p);
+  const isActionPrompt = /filter overdue|check overdue|open quote|view client/i.test(p);
+
+  if (!hasWriteIntent && !isActionPrompt) {
+    return [];
+  }
+
+  if (document && hasWriteIntent) {
     const docName = (document.name || "").toLowerCase();
     const isImage = (document.mimeType || "").startsWith("image/");
-    const finDoc = document.financialDoc;
+    const finDoc = document.financialDoc || document.extractedData?.financialDoc;
 
-    if ((isImage || docName.includes("receipt") || docName.includes("expense")) && finDoc?.totalAmount && finDoc.totalAmount > 0) {
+    if ((isImage || docName.includes("receipt") || docName.includes("expense") || p.includes("expense") || p.includes("receipt")) && finDoc?.totalAmount && finDoc.totalAmount > 0) {
       actions.push({
         id: `act-exp-${Date.now()}`,
         type: "create_expense",
@@ -239,23 +284,24 @@ function extractServerActions(prompt: string, document?: any): any[] {
       });
     }
 
-    if (document.tables && document.tables.length > 0) {
-      const clientTable = document.tables.find((t: any) => /client|customer|lead/i.test(t.name || "") || (t.headers?.some((h: string) => /name|contact/i.test(h))));
+    const tables = document.tables || document.extractedData?.tables;
+    if (tables && Array.isArray(tables) && tables.length > 0) {
+      const clientTable = tables.find((t: any) => /client|customer|lead/i.test(t.name || "") || (t.headers?.some((h: string) => /name|contact/i.test(h))));
       if (clientTable) {
         actions.push({
           id: `act-imp-clients-${Date.now()}`,
           type: "import_clients",
-          label: `Import ${clientTable.rows?.length || 0} Clients`,
+          label: `Import ${clientTable.rows?.length || 0} Clients to Database`,
           icon: "database",
           isMutation: true,
-          riskLevel: "medium",
+          riskLevel: "high",
           payload: { clientsCount: clientTable.rows?.length || 0 }
         });
       }
     }
   }
 
-  if (p.includes("overdue") || p.includes("unpaid")) {
+  if (p.includes("filter overdue") || p.includes("check overdue invoices")) {
     actions.push({
       id: `act-filter-${Date.now()}`,
       type: "filter_invoices",
@@ -317,23 +363,9 @@ serve(async (req) => {
       );
     }
 
-    const authHeader = req.headers.get("Authorization") || "";
-    const token = authHeader.replace("Bearer ", "").trim();
-
     const supabase = createClient(supabaseUrl, supabaseServiceKey, {
       auth: { persistSession: false, autoRefreshToken: false }
     });
-
-    let userId: string | undefined = undefined;
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || "";
-    if (token && token !== supabaseServiceKey && token !== anonKey && token.length > 30) {
-      try {
-        const { data, error } = await supabase.auth.getUser(token);
-        if (!error && data?.user) userId = data.user.id;
-      } catch (e) {
-        console.warn("[ai-chat] User token lookup skipped:", e);
-      }
-    }
 
     if (typeof prompt !== "string" && !document) {
       return new Response(
@@ -352,35 +384,39 @@ serve(async (req) => {
 
     let docContent = "";
     if (document) {
-      if (document.content) {
-        if (typeof document.content !== "string") {
+      const content = document.content || document.textContent;
+      if (content) {
+        if (typeof content !== "string") {
           return new Response(
             JSON.stringify({ success: false, error: "Invalid document text format." }),
             { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400 }
           );
         }
-        docContent = document.content.slice(0, MAX_DOC_CONTENT_LEN);
+        docContent = content.slice(0, MAX_DOC_CONTENT_LEN);
       }
-      if (document.imageBase64) {
-        if (typeof document.imageBase64 !== "string" || document.imageBase64.length > MAX_IMAGE_BASE64_BYTES) {
+
+      const imgData = document.imageBase64 || document.extractedData?.images?.[0]?.data;
+      if (imgData) {
+        if (typeof imgData !== "string" || imgData.length > MAX_IMAGE_BASE64_BYTES) {
           return new Response(
-            JSON.stringify({ success: false, error: "Uploaded image exceeds 5MB limit." }),
+            JSON.stringify({ success: false, error: "Uploaded image exceeds 7MB limit." }),
             { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400 }
           );
         }
       }
     }
 
-    const live = await fetchLiveMetrics(supabase, userId);
+    const live = await fetchLiveMetrics(supabase);
     const actions = extractServerActions(cleanPrompt, document);
 
     let finalPrompt = cleanPrompt;
     if (docContent) {
-      finalPrompt += `\n\n[Uploaded Document: ${document.name || 'Attachment'}]\n${docContent}`;
+      finalPrompt += `\n\n[Uploaded Document: ${document.name || document.fileName || 'Attachment'}]\n${docContent}`;
     }
 
-    if (document?.tables && Array.isArray(document.tables)) {
-      for (const table of document.tables) {
+    const docTables = document?.tables || document?.extractedData?.tables;
+    if (docTables && Array.isArray(docTables)) {
+      for (const table of docTables) {
         finalPrompt += `\n\n[Extracted Table: ${table.name || 'Sheet'}]\n`;
         finalPrompt += `Headers: ${table.headers?.join(' | ') || 'N/A'}\n`;
         finalPrompt += `Sample Rows (first 5):\n`;
@@ -405,23 +441,17 @@ CRITICAL RULES:
 LIVE DATABASE METRICS (verified from Supabase):
 - Company: ${live.companyName}
 - Currency: ${live.currency}
-- Active Clients: ${live.clientCount}
+- Total Clients: ${live.clientCount}
 - Total Quotes: ${live.totalQuotes}
 - Total Invoices: ${live.totalInvoices}
-- Invoiced Turnover (Total Billed): ${live.currency} ${live.totalRevenue.toLocaleString()}
+- Invoiced Turnover: ${live.currency} ${live.totalRevenue.toLocaleString()}
 - Total Cash Collected: ${live.currency} ${live.totalCashCollected.toLocaleString()}
 - Outstanding Receivables: ${live.currency} ${live.pendingBalance.toLocaleString()}
-- Collection Rate: ${live.collectionRate}%
-- Conversion Rate: ${live.conversionRate}%
+- Collection Efficiency: ${live.collectionRate}%
+- Quote Conversion Rate: ${live.conversionRate}%
 - Overdue Invoices: ${live.overdueInvoiceCount} (${live.currency} ${live.overdueBalance.toLocaleString()})
-- Total Expenses: ${live.totalExpenses}
 - Product Catalog: ${live.productCount} items
-
-FINANCIAL DEFINITIONS:
-- Invoiced Turnover = sum of all invoice total amounts
-- Cash Collected = sum of all recorded payments
-- Outstanding Receivables = Invoiced Turnover minus Cash Collected
-- Collection Rate = (Cash Collected / Invoiced Turnover) × 100`;
+- Expense Tracking: Not stored in database schema`;
 
     const contents: any[] = [];
     if (Array.isArray(history)) {
@@ -447,18 +477,21 @@ FINANCIAL DEFINITIONS:
     }
 
     const userParts: any[] = [];
-    if (document?.imageBase64) {
+    const imagePayload = document?.imageBase64 || document?.extractedData?.images?.[0]?.data;
+    const binaryPayload = document?.binaryData?.data || document?.extractedData?.binaryData?.data;
+
+    if (imagePayload) {
       userParts.push({
         inline_data: {
           mime_type: document.mimeType || "image/jpeg",
-          data: document.imageBase64
+          data: imagePayload
         }
       });
-    } else if (document?.binaryData?.data) {
+    } else if (binaryPayload) {
       userParts.push({
         inline_data: {
-          mime_type: document.binaryData.mimeType || document.mimeType || "application/pdf",
-          data: document.binaryData.data
+          mime_type: document.binaryData?.mimeType || document.mimeType || "application/pdf",
+          data: binaryPayload
         }
       });
     }
@@ -478,43 +511,39 @@ FINANCIAL DEFINITIONS:
     };
 
     if (isStreamRequested) {
-      const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_PRIMARY_MODELS[0]}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
-      
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      for (const streamModel of GEMINI_PRIMARY_MODELS) {
+        const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${streamModel}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
-      const upstreamRes = await fetch(streamUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(generationPayload),
-        signal: controller.signal
-      });
+        try {
+          const upstreamRes = await fetch(streamUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(generationPayload),
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
 
-      clearTimeout(timeoutId);
-
-      if (!upstreamRes.ok || !upstreamRes.body) {
-        const errText = await upstreamRes.text().catch(() => "");
-        console.error(`[ai-chat] Upstream stream failed ${upstreamRes.status}:`, errText);
-        return new Response(
-          JSON.stringify({ success: false, error: "Failed to establish model stream." }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: upstreamRes.status }
-        );
-      }
-
-      return new Response(upstreamRes.body, {
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          "Connection": "keep-alive"
+          if (upstreamRes.ok && upstreamRes.body) {
+            return new Response(upstreamRes.body, {
+              headers: {
+                ...corsHeaders,
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive"
+              }
+            });
+          }
+        } catch (sErr) {
+          clearTimeout(timeoutId);
+          console.warn(`[ai-chat] Stream failover from ${streamModel}:`, sErr);
         }
-      });
+      }
     }
 
-    let lastError = "";
     for (const modelName of GEMINI_PRIMARY_MODELS) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
-      
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
@@ -540,10 +569,6 @@ FINANCIAL DEFINITIONS:
           }
 
           const candidate = data?.candidates?.[0];
-          if (candidate?.finishReason && candidate.finishReason !== "STOP" && candidate.finishReason !== "MAX_TOKENS") {
-            console.warn(`[ai-chat] Finish reason: ${candidate.finishReason}`);
-          }
-
           const text = candidate?.content?.parts?.[0]?.text;
           if (text) {
             return new Response(
@@ -555,20 +580,19 @@ FINANCIAL DEFINITIONS:
           const errText = await response.text();
           console.warn(`[ai-chat] HTTP ${response.status} from ${modelName}:`, errText);
           
-          if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+          if (response.status === 400) {
             return new Response(
-              JSON.stringify({ success: false, error: "Invalid request to AI service." }),
-              { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: response.status }
+              JSON.stringify({ success: false, error: "Invalid request parameters to AI service." }),
+              { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400 }
             );
           }
 
-          lastError = `Status ${response.status}`;
-          await new Promise(r => setTimeout(r, 600));
+          // Continue loop for 404, 429, 5xx
+          await new Promise(r => setTimeout(r, 400));
         }
       } catch (fetchErr: any) {
         clearTimeout(timeoutId);
         console.error(`[ai-chat] Fetch error on ${modelName}:`, fetchErr.message);
-        lastError = fetchErr.message;
       }
     }
 
