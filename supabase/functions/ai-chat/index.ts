@@ -292,6 +292,7 @@ function extractServerActions(prompt: string, document?: any): any[] {
 }
 
 serve(async (req) => {
+  const startTime = Date.now();
   const corsHeaders = getCorsHeaders(req);
 
   if (req.method === "OPTIONS") {
@@ -559,7 +560,24 @@ LIVE DATABASE METRICS (verified from Supabase):
           const text = candidate?.content?.parts?.[0]?.text;
           if (text) {
             return new Response(
-              JSON.stringify({ success: true, reply: text, actions }),
+              JSON.stringify({
+                success: true,
+                reply: text,
+                actions,
+                meta: {
+                  model: modelName,
+                  latencyMs: Date.now() - startTime,
+                  groundedMetrics: {
+                    company: live.companyName,
+                    currency: live.currency,
+                    clients: live.clientCount,
+                    quotes: live.totalQuotes,
+                    invoices: live.totalInvoices,
+                    cashCollected: live.totalCashCollected,
+                    outstanding: live.pendingBalance
+                  }
+                }
+              }),
               { headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
           }
