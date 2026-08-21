@@ -1148,11 +1148,11 @@ function generateContractTerms(params) {
 // src/services/ai-routes.ts
 var router10 = (0, import_express10.Router)();
 var GEMINI_PRIMARY_MODELS = [
-  "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-3.6-flash",
-  "gemini-3.1-flash-lite",
-  "gemini-3.1-pro-preview"
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+  "gemini-1.5-pro",
+  "gemini-2.5-pro"
 ];
 var MAX_PROMPT_LEN = 4e3;
 var MAX_HISTORY_ITEMS = 20;
@@ -1176,18 +1176,18 @@ FINANCIAL TERMINOLOGY DEFINITIONS:
 - Outstanding Receivables / Balance Due: TotalAmount_KES minus AmountPaid_KES.
 
 BINTI EVENTS DATABASE SCHEMAS & AUTOMATIC DATA MAPPING:
-You already possess the complete internal database schemas. NEVER ask the user for column templates or format structures. Automatically map any uploaded table, spreadsheet, or text to these schemas:
+You have complete visibility into the schemas below as well as the Raw Column Headers provided in the [Extracted Table] blocks. When the user asks about column headers or schemas, inspect the exact Raw Column Headers and map them directly into Binti Events schemas:
 1. CLIENT TABLE (\`clients\`): name (required), company, phone, email, address, taxNumber.
 2. PRODUCT & INVENTORY TABLE (\`products\`): name (required), category, unitPrice, unitType, description.
 3. EXPENSE TABLE (\`expenses\`): category, description, amount, date (YYYY-MM-DD), referenceNumber.
+4. QUOTE & INVOICE SCHEMAS: quoteNumber, invoiceNumber, clientName, items, subtotal, taxAmount, totalAmount, amountPaid, balanceDue, status.
 
-CRITICAL GROUNDING RULES FOR SPREADSHEETS & IMAGES:
-- When an image (receipt, fuel slip, invoice photo, cash voucher) is uploaded, examine the visual image directly and extract: Vendor/Supplier Name, Transaction Date, Category, Line Items, and Total Amount in KES.
-- When a SPREADSHEET ANALYSIS & AUDIT REPORT is attached in the prompt, you MUST use the exact numbers and counts stated in the report.
-- If the report states "Client Records: 8,000 clients", you MUST report 8,000 clients. If the report states "Invoices Issued: 9,000 invoices (Total Invoiced Turnover: KES 13,625,654,681)", you MUST report those exact numbers.
-- NEVER invent, round, or guess client, invoice, or revenue figures. Answer questions with exact factual numbers from the document.
-- Only propose mutation actions (e.g. import_clients, create_expense) when Virginia explicitly asks to import, save, or record data. Do not generate write buttons for simple read queries (e.g. "how many clients", "check finances").
-- REAL DATABASE MUTATIONS: You do NOT execute silent database commits through conversational text alone. NEVER claim "Status: Committed" or pretend SQL insertion scripts completed in plain text. When an import or write is requested, summarize the mapped records and instruct Virginia to click [Approve & Execute] to commit them to the live database.`;
+CRITICAL GROUNDING RULES:
+- LIVE DATABASE QUERIES (e.g. 'check system dashboard', 'check core billing metrics', 'how many clients do I have', 'current stats', 'what is our revenue'): You MUST ONLY report the exact numbers from the Current Business Context below. If it says Active Clients: 0, you MUST report 0 clients. NEVER claim data from previous uploaded files is in the live database unless it appears in Current Business Context.
+- UPLOADED DOCUMENT AUDITS: When a SPREADSHEET ANALYSIS & AUDIT REPORT or [Extracted Table] is attached in the current prompt, report the exact numbers stated in that document for the file analysis.
+- REAL DATABASE MUTATIONS: You do NOT execute silent database commits through conversational text alone. NEVER claim "Status: Committed" or output fake markdown button placeholders. Summarize the mapped records cleanly; interactive action confirmation cards are automatically generated beneath your response for Virginia to execute the import.
+- STRICTLY NEVER TYPE BUTTON LABELS IN TEXT: Do NOT output '[Approve & Execute]', 'Approve & Execute', '[Approve & Execute Import]', or instruct the user to 'click below' in your markdown text. The user interface automatically renders the interactive action buttons.
+- GREETINGS & CASUAL INTERACTION: When the user greets you (e.g. 'hi', 'hello', 'hey', 'good morning', 'how are you'), respond warmly, naturally, and politely as Binti, ready to help manage quotes, invoices, clients, or analyze data files. On direct business and data queries, be direct, factual, and analytical without filler.`;
   const contextBlock = `
 Current Business Context:
 - Company: ${context?.companyName || "Binti Events"}
@@ -1293,9 +1293,9 @@ async function callGeminiBackendAPI(prompt, history = [], context = {}, document
         }
       } else {
         const errText = await response.text();
-        console.warn(`[Gemini 3.x HTTP ${response.status} for ${modelName}]:`, errText);
-        if (response.status >= 400 && response.status < 500 && response.status !== 429) {
-          return { reply: null, statusCode: response.status, error: "Invalid AI request parameters." };
+        console.warn(`[Gemini HTTP ${response.status} for ${modelName}]:`, errText);
+        if (response.status === 400) {
+          return { reply: null, statusCode: 400, error: "Invalid AI request parameters." };
         }
         await new Promise((r) => setTimeout(r, 600));
       }
@@ -1316,12 +1316,35 @@ router10.post("/api/ai/chat", async (req, res) => {
     if (cleanPrompt.length > MAX_PROMPT_LEN) {
       return res.status(400).json({ success: false, error: `Prompt exceeds maximum length of ${MAX_PROMPT_LEN} characters.` });
     }
-    let finalPrompt = cleanPrompt;
-    if (document?.content && typeof document.content === "string") {
+    let finalPrompt = (prompt || "").trim();
+    if (document && document.content) {
       finalPrompt += `
 
 [Uploaded Document: ${document.name || "Attachment"} (${document.type || "file"})]
 ${document.content.slice(0, MAX_DOC_CONTENT_LEN)}`;
+    }
+    if (document?.tables && Array.isArray(document.tables)) {
+      for (const table of document.tables) {
+        finalPrompt += `
+
+[Extracted Table / Worksheet: "${table.name || "Sheet"}"]
+`;
+        finalPrompt += `Raw Column Headers: ${table.headers?.join(" | ") || "N/A"}
+`;
+        if (table.rows && table.rows.length > 0) {
+          finalPrompt += `Sample Rows (first 5):
+`;
+          for (const row of table.rows.slice(0, 5)) {
+            finalPrompt += (Array.isArray(row) ? row.map((cell) => String(cell ?? "")).join(" | ") : JSON.stringify(row)) + "\n";
+          }
+        }
+      }
+    }
+    if (document?.financialDoc) {
+      finalPrompt += `
+
+[Extracted Financial Document Details]:
+${JSON.stringify(document.financialDoc, null, 2)}`;
     }
     const db = await readDB();
     const totalRev = db.invoices.reduce((s, i) => s + (i.payments || []).reduce((p, pm) => p + (pm.amountPaid || 0), 0), 0);
