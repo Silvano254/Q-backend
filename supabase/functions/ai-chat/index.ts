@@ -164,14 +164,12 @@ async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
     }
 
     // 4. Invoices (grand_total, balance_remaining, due_date, status)
-    let invoicesList: any[] = [];
     try {
       const { data: invoices } = await supabase
         .from("invoices")
         .select("*");
       
       if (invoices && invoices.length > 0) {
-        invoicesList = invoices;
         metrics.totalInvoices = invoices.length;
         
         metrics.totalRevenue = invoices.reduce((s: number, r: any) => {
@@ -187,6 +185,8 @@ async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
         const now = new Date();
         const overdue = invoices.filter((i: any) => {
           const st = (i.status || "").toLowerCase();
+          if (st === "paid") return false;
+
           const bal = Number(i.balance_remaining ?? i.balanceRemaining ?? i.balanceDue ?? 0);
           const rawDue = i.due_date ?? i.dueDate;
           const dueDate = rawDue ? new Date(rawDue) : null;
@@ -203,24 +203,16 @@ async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
       console.warn("[ai-chat] invoices fetch warning:", e);
     }
 
-    // 5. Payments (payments table: amount_paid)
+    // 5. Payments (authoritative source: payments table)
     try {
       const { data: payments } = await supabase
         .from("payments")
         .select("amount_paid");
 
-      if (payments && payments.length > 0) {
-        metrics.totalCashCollected = payments.reduce((s: number, p: any) => s + Number(p.amount_paid || 0), 0);
-      } else if (invoicesList.length > 0) {
-        // Fallback calculation from invoice paid fields
-        metrics.totalCashCollected = invoicesList.reduce((s: number, r: any) => {
-          let paid = r.amount_paid ?? r.amountPaid ?? 0;
-          if (!paid && Array.isArray(r.payments)) {
-            paid = r.payments.reduce((sum: number, p: any) => sum + Number(p.amount_paid ?? p.amountPaid ?? 0), 0);
-          }
-          return s + Number(paid || 0);
-        }, 0);
-      }
+      metrics.totalCashCollected = (payments || []).reduce(
+        (sum: number, p: any) => sum + Number(p.amount_paid || 0),
+        0
+      );
 
       metrics.collectionRate = metrics.totalRevenue > 0
         ? Math.round((metrics.totalCashCollected / metrics.totalRevenue) * 100)
@@ -360,6 +352,18 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({ success: false, error: "AI service configuration error." }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 500 }
+      );
+    }
+
+    const authHeader = req.headers.get("Authorization") || "";
+    const apikeyHeader = req.headers.get("apikey") || "";
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || "";
+    const incomingToken = (authHeader.replace(/^Bearer\s+/i, "") || apikeyHeader).trim();
+
+    if (!incomingToken) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Unauthorized. Authorization header or apikey is required." }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 401 }
       );
     }
 
