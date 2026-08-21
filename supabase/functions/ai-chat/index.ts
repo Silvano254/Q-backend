@@ -13,7 +13,7 @@ const ALLOWED_ORIGINS = [
 
 function getCorsHeaders(req: Request) {
   const origin = req.headers.get("Origin") || "";
-  const allowed = ALLOWED_ORIGINS.includes(origin) || origin.endsWith(".vercel.app");
+  const allowed = ALLOWED_ORIGINS.includes(origin) || /^https:\/\/[a-z0-9-]+-silvano254s-projects\.vercel\.app$/.test(origin) || origin === "https://quote-sys.vercel.app";
   return {
     "Access-Control-Allow-Origin": allowed ? origin : ALLOWED_ORIGINS[0],
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, accept",
@@ -184,14 +184,14 @@ async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
 
         const now = new Date();
         const overdue = invoices.filter((i: any) => {
-          const st = (i.status || "").toLowerCase();
-          if (st === "paid") return false;
+          const status = String(i.status || "").toLowerCase();
+          if (status === "paid") return false;
+          if (status === "overdue") return true;
 
-          const bal = Number(i.balance_remaining ?? i.balanceRemaining ?? i.balanceDue ?? 0);
+          const balance = Number(i.balance_remaining ?? i.balanceRemaining ?? i.balanceDue ?? 0);
           const rawDue = i.due_date ?? i.dueDate;
           const dueDate = rawDue ? new Date(rawDue) : null;
-          const isDatePast = dueDate !== null && !isNaN(dueDate.getTime()) && dueDate < now;
-          return st === "overdue" || (bal > 0 && isDatePast);
+          return balance > 0 && !!dueDate && !isNaN(dueDate.getTime()) && dueDate < now;
         });
 
         metrics.overdueInvoiceCount = overdue.length;
