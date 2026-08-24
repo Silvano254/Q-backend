@@ -1,13 +1,21 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.112.3'
 
-const supabaseUrl =
-  Deno.env.get('SUPABASE_URL') ||
-  'https://ltinjyvcrgwcvudrnfby.supabase.co'
+// SUPABASE_URL is auto-injected by the Supabase Edge runtime in production.
+// No hardcoded fallback: a missing URL must fail loudly, not silently target
+// a different project.
+const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
 
 const supabaseServiceRoleKey =
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ||
   Deno.env.get('SUPABASE_ANON_KEY') ||
   ''
+
+if (!supabaseUrl || !supabaseServiceRoleKey) {
+  console.error(
+    '[db] CRITICAL: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not configured. ' +
+    'All database operations will fail until these secrets are set.'
+  )
+}
 
 export const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
   auth: {

@@ -104,6 +104,78 @@ CREATE TABLE IF NOT EXISTS public.invoices (
 );
 
 -- ============================================================
+-- 5b. Legacy column harmonization (camelCase -> snake_case)
+-- Databases provisioned by the older Phase-5 SQL used camelCase
+-- columns. Rename them to the canonical snake_case names WITHOUT
+-- touching data, so every Edge Function sees one consistent contract.
+-- Each rename runs independently; failures are reported, never fatal.
+-- ============================================================
+DO $$
+DECLARE
+  r record;
+BEGIN
+  FOR r IN
+    SELECT * FROM (VALUES
+      -- auth_users
+      ('auth_users','passwordHash','password_hash'),
+      ('auth_users','passwordSalt','password_salt'),
+      ('auth_users','resetOtp','reset_otp'),
+      ('auth_users','resetOtpExpiry','reset_otp_expiry'),
+      ('auth_users','biometricRegistered','biometric_registered'),
+      ('auth_users','biometricCredentialId','biometric_credential_id'),
+      -- clients
+      ('clients','companyName','company_name'),
+      ('clients','taxNumber','tax_number'),
+      -- products
+      ('products','unitPrice','price'),
+      ('products','unitType','unit'),
+      -- quotes
+      ('quotes','quoteNumber','quote_number'),
+      ('quotes','clientId','client_id'),
+      ('quotes','clientName','client_name'),
+      ('quotes','grandTotal','grand_total'),
+      ('quotes','quoteDate','quote_date'),
+      ('quotes','expiryDate','valid_until'),
+      -- invoices
+      ('invoices','invoiceNumber','invoice_number'),
+      ('invoices','clientId','client_id'),
+      ('invoices','clientName','client_name'),
+      ('invoices','grandTotal','grand_total'),
+      ('invoices','balanceRemaining','balance_remaining'),
+      ('invoices','dueDate','due_date'),
+      -- payments
+      ('payments','invoiceId','invoice_id'),
+      ('payments','invoiceNumber','invoice_number'),
+      ('payments','clientName','client_name'),
+      ('payments','amountPaid','amount_paid'),
+      ('payments','paymentMethod','payment_method'),
+      ('payments','referenceNumber','reference'),
+      ('payments','paymentDate','payment_date'),
+      -- company_settings
+      ('company_settings','companyName','company_name'),
+      ('company_settings','taxNumber','tax_number'),
+      ('company_settings','bankDetails','bank_details'),
+      ('company_settings','termsTemplate','terms_template')
+    ) AS m(tbl, oldcol, newcol)
+  LOOP
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_schema='public' AND table_name=r.tbl AND column_name=r.oldcol
+    ) AND NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_schema='public' AND table_name=r.tbl AND column_name=r.newcol
+    ) THEN
+      BEGIN
+        EXECUTE format('ALTER TABLE public.%I RENAME COLUMN %I TO %I', r.tbl, r.oldcol, r.newcol);
+        RAISE NOTICE 'Renamed %.% -> %', r.tbl, r.oldcol, r.newcol;
+      EXCEPTION WHEN others THEN
+        RAISE NOTICE 'Rename %.% skipped: %', r.tbl, r.oldcol, SQLERRM;
+      END;
+    END IF;
+  END LOOP;
+END $$;
+
+-- ============================================================
 -- 6. Adaptive ID defaults
 -- Fresh installs have UUID ids; legacy databases may have
 -- varchar/text ids. Give BOTH a working default so API inserts
