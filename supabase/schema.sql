@@ -176,6 +176,32 @@ BEGIN
 END $$;
 
 -- ============================================================
+-- 5c. Ensure required columns exist (legacy tables may predate them)
+-- Adds any missing canonical columns additively — never drops data.
+-- ============================================================
+DO $$
+DECLARE
+  t text;
+BEGIN
+  -- Audit timestamps on every business + auth table
+  FOREACH t IN ARRAY ARRAY[
+    'auth_users','company_settings','clients','products',
+    'quotes','invoices','payments'
+  ]
+  LOOP
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=t) THEN
+      EXECUTE format('ALTER TABLE public.%I ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()', t);
+      EXECUTE format('ALTER TABLE public.%I ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()', t);
+    END IF;
+  END LOOP;
+
+  -- Optional text columns the API may write
+  EXECUTE 'ALTER TABLE public.clients  ADD COLUMN IF NOT EXISTS notes TEXT';
+  EXECUTE 'ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS reference TEXT';
+  EXECUTE 'ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS notes TEXT';
+END $$;
+
+-- ============================================================
 -- 6. Adaptive ID defaults
 -- Fresh installs have UUID ids; legacy databases may have
 -- varchar/text ids. Give BOTH a working default so API inserts

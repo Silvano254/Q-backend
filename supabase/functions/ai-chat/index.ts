@@ -3,24 +3,10 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.112.3";
 import { requireAuth } from "../shared/auth-guard.ts";
-
-const ALLOWED_ORIGINS = [
-  "http://localhost:5173",
-  "http://localhost:3000",
-  "http://localhost:4173",
-  "https://bintievents.com",
-  "https://quote-sys.vercel.app"
-];
-
-function getCorsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") || "";
-  const allowed = ALLOWED_ORIGINS.includes(origin) || /^https:\/\/[a-z0-9-]+-silvano254s-projects\.vercel\.app$/.test(origin) || origin === "https://quote-sys.vercel.app";
-  return {
-    "Access-Control-Allow-Origin": allowed ? origin : ALLOWED_ORIGINS[0],
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, accept",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-  };
-}
+// Use the SAME permissive CORS as every other Edge Function. A restrictive
+// allow-list here caused silent browser blocks (generic "connection" errors)
+// whenever the deployed frontend domain wasn't in the list.
+import { getCORSHeaders, handleCORS } from "../shared/utils.ts";
 
 const GEMINI_PRIMARY_MODELS = [
   "gemini-2.5-flash",
@@ -305,11 +291,10 @@ function extractServerActions(prompt: string, document?: any): any[] {
 
 serve(async (req) => {
   const startTime = Date.now();
-  const corsHeaders = getCorsHeaders(req);
+  const corsHeaders = getCORSHeaders();
 
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
+  const corsResponse = handleCORS(req);
+  if (corsResponse) return corsResponse;
 
   const clientIp = req.headers.get("x-forwarded-for") || req.headers.get("cf-connecting-ip") || "unknown";
   if (!(await checkRateLimit(clientIp))) {

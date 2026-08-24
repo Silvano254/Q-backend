@@ -1,25 +1,46 @@
 # Binti Events - Admin credential bootstrap / recovery
 #
-# Usage (values resolved in this order: explicit param -> environment variable):
-#   .\reset-admin.ps1 -SeedSecret "<YOUR_JWT_SECRET>"
-#   $env:SUPABASE_URL="https://<ref>.supabase.co"; $env:SUPABASE_ANON_KEY="<anon>"; .\reset-admin.ps1 -SeedSecret "..."
+# NO CREDENTIALS ARE HARDCODED. You must supply everything explicitly.
 #
-# Optional overrides:
-#   .\reset-admin.ps1 -SeedSecret "..." -Email "you@domain.com" -Password "NewPass123" -Name "Administrator"
+# Usage:
+#   .\reset-admin.ps1 -SeedSecret "<JWT_SECRET>" -Email "<login-email>" -Password "<login-password>"
+#
+# Project URL / anon key resolve as: explicit param -> env var -> .\env file
+#   ($env:SUPABASE_URL / $env:SUPABASE_ANON_KEY, or keys in .\.env)
 
 param(
   [Parameter(Mandatory = $true)][string]$SeedSecret,
+  [Parameter(Mandatory = $true)][string]$Email,
+  [Parameter(Mandatory = $true)][string]$Password,
   [string]$ProjectUrl = $env:SUPABASE_URL,
   [string]$ApiKey     = $env:SUPABASE_ANON_KEY,
-  [string]$Email      = 'admin@bintievents.co.ke',
-  [string]$Password   = 'Admin@2026',
   [string]$Name       = 'Administrator'
 )
 
 $ErrorActionPreference = 'Stop'
 
-if (-not $ProjectUrl) { Write-Host "ERROR: Project URL not provided. Pass -ProjectUrl or set `$env:SUPABASE_URL." -ForegroundColor Red; exit 1 }
-if (-not $ApiKey)     { Write-Host "ERROR: Anon key not provided. Pass -ApiKey or set `$env:SUPABASE_ANON_KEY." -ForegroundColor Red; exit 1 }
+# Resolution order: explicit param -> environment variable -> local .env file
+function Get-DotEnvValue([string]$Key) {
+  $envPath = Join-Path $PSScriptRoot '.env'
+  if (-not (Test-Path $envPath)) { return $null }
+  foreach ($line in Get-Content $envPath) {
+    if ($line -match ('^\s*' + [regex]::Escape($Key) + '\s*=\s*(.+?)\s*$')) {
+      return $Matches[1].Trim('"', "'")
+    }
+  }
+  return $null
+}
+
+if (-not $ProjectUrl) { $ProjectUrl = Get-DotEnvValue 'SUPABASE_URL' }
+if (-not $ApiKey) {
+  # Anon key preferred; fall back to service-role key (valid as an apikey header)
+  $ApiKey = Get-DotEnvValue 'SUPABASE_ANON_KEY'
+  if (-not $ApiKey) { $ApiKey = $env:SUPABASE_SERVICE_ROLE_KEY }
+  if (-not $ApiKey) { $ApiKey = Get-DotEnvValue 'SUPABASE_SERVICE_ROLE_KEY' }
+}
+
+if (-not $ProjectUrl) { Write-Host "ERROR: Project URL not found. Pass -ProjectUrl, set `$env:SUPABASE_URL, or add SUPABASE_URL=<url> to .\.env" -ForegroundColor Red; exit 1 }
+if (-not $ApiKey)     { Write-Host "ERROR: Anon key not found. Pass -ApiKey, set `$env:SUPABASE_ANON_KEY, or add SUPABASE_ANON_KEY=<key> to .\.env" -ForegroundColor Red; exit 1 }
 $Base = $ProjectUrl.TrimEnd('/') + '/functions/v1'
 
 function Read-ErrorBody($err) {
@@ -54,9 +75,7 @@ try {
   Write-Host ("User : {0} ({1})" -f $login.data.user.email, $login.data.user.role) -ForegroundColor Green
   $t = $login.data.token
   Write-Host ("Token: {0}...{1}" -f $t.Substring(0,20), $t.Substring($t.Length-10)) -ForegroundColor DarkGray
-  Write-Host "`nYou can now sign in at the app with:" -ForegroundColor Yellow
-  Write-Host "  Email:    $Email" -ForegroundColor Yellow
-  Write-Host "  Password: $Password" -ForegroundColor Yellow
+  Write-Host "`nYou can now sign in at the app with the email/password you supplied." -ForegroundColor Yellow
 }
 catch {
   Write-Host "LOGIN FAILED:" -ForegroundColor Red
