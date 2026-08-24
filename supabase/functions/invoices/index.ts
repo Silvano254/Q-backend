@@ -10,14 +10,47 @@ import {
   parseRequestJSON,
   sanitizeString,
 } from '../shared/utils.ts'
-import { Invoice } from '../shared/types.ts'
+
+// Canonical DB columns: id UUID, invoice_number UNIQUE, client_id UUID FK
+// (nullable), client_name, grand_total NUMERIC, balance_remaining NUMERIC,
+// status, items JSONB, notes, due_date TIMESTAMPTZ.
+// NOTE: issue_date/subtotal/discountTotal/taxTotal are NOT canonical columns.
+// Payment records live in the dedicated `payments` table (see payments fn).
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function mapInvoice(row: any) {
+  if (!row) return null
+  return {
+    id: row.id,
+    invoiceNumber: row.invoice_number || '',
+    quoteId: undefined,
+    quoteNumber: undefined,
+    clientId: row.client_id || '',
+    clientName: row.client_name || '',
+    issueDate: row.created_at ? String(row.created_at).split('T')[0] : undefined,
+    dueDate: row.due_date || undefined,
+    items: Array.isArray(row.items) ? row.items : [],
+    subtotal: undefined,
+    discountTotal: undefined,
+    taxTotal: undefined,
+    grandTotal: Number(row.grand_total || 0),
+    status: row.status || 'draft',
+    payments: [],
+    balanceRemaining: Number(row.balance_remaining ?? row.grand_total ?? 0),
+    notes: row.notes || '',
+    terms: '',
+  }
+}
 
 serve(async (req) => {
   const corsResponse = handleCORS(req)
   if (corsResponse) return corsResponse
 
   try {
-    const auth = requireAuth(req)
+    // AWAIT is mandatory — requireAuth is async; an unawaited call would
+    // always be truthy and bypass authentication entirely.
+    const auth = await requireAuth(req)
     if (!auth) {
       return errorResponse('Authentication required', 401)
     }
@@ -45,47 +78,61 @@ async function handleGetInvoices() {
   const { data, error } = await supabase
     .from('invoices')
     .select('*')
-    .order('issueDate', { ascending: false })
+    .order('created_at', { ascending: false })
 
   if (error) {
     logError('invoices-get', error)
-    return errorResponse('Failed to fetch invoices', 500)
+    return errorResponse(`Failed to fetch invoices: ${error.message}`, 500)
   }
 
-  return successResponse(data || [])
+  return successResponse((data || []).map(mapInvoice))
 }
 
 async function handleCreateInvoice(req: Request) {
   logRequest('invoices', 'POST', 'create')
 
-  const body = await parseRequestJSON<Partial<Invoice>>(req)
+  const body = await parseRequestJSON<any>(req)
   if (!body) {
     return errorResponse('Invalid request body', 400)
   }
 
-  if (!body.clientId || !body.clientName) {
+  const clientName = sanitizeString(String(body.clientName ?? body.client_name ?? '')).slice(0, 200)
+  if (!clientName) {
     return errorResponse('Client information is required', 400)
   }
 
-  const invoiceData = {
-    id: `inv_${Date.now()}`,
-    invoiceNumber: body.invoiceNumber || `INV-${Date.now()}`,
-    quoteId: body.quoteId,
-    quoteNumber: body.quoteNumber,
-    clientId: sanitizeString(body.clientId),
-    clientName: sanitizeString(body.clientName),
-    issueDate: body.issueDate || new Date().toISOString().split('T')[0],
-    dueDate: body.dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    items: body.items || [],
-    subtotal: body.subtotal || 0,
-    discountTotal: body.discountTotal || 0,
-    taxTotal: body.taxTotal || 0,
-    grandTotal: body.grandTotal || 0,
-    status: body.status || 'draft',
-    payments: body.payments || [],
-    balanceRemaining: body.grandTotal || 0,
-    notes: sanitizeString(body.notes || ''),
-    terms: sanitizeString(body.terms || ''),
+  const rawClientId = String(body.clientId ?? body.client_id ?? '')
+  // Only persist client_id when it is a real UUID FK; placeholder ids
+  // ('client_gen', legacy text ids) must not violate the foreign key.
+  const clientId = UUID_RE.test(rawClientId) ? rawClientId : null
+
+  const grandTotal = Number(body.grandTotal ?? body.grand_total ?? 0) || 0
+  const incomingPayments = Array.isArray(body.payments) ? body.payments : []
+  const totalPaid = incomingPayments.reduce((s: number, p: any) => s + (Number(p?.amountPaid) || 0), 0)
+  const balanceRemaining = Math.max(0, grandTotal - totalPaid)
+
+  let status = ['draft', 'pending', 'partially_paid', 'paid', 'overdue', 'cancelled'].includes(body.status)
+    ? body.status
+    : 'pending'
+  if (status !== 'cancelled' && status !== 'draft') {
+    if (balanceRemaining <= 0 && grandTotal > 0 && incomingPayments.length > 0) {
+      status = 'paid'
+    } else if (totalPaid > 0) {
+      status = 'partially_paid'
+    }
+  }
+
+  // No explicit id — let gen_random_uuid() generate the UUID primary key.
+  const invoiceData: Record<string, any> = {
+    invoice_number: sanitizeString(String(body.invoiceNumber ?? '')).slice(0, 50) || `INV-${Date.now()}`,
+    client_id: clientId,
+    client_name: clientName,
+    grand_total: grandTotal,
+    balance_remaining: balanceRemaining,
+    status,
+    items: Array.isArray(body.items) ? body.items : [],
+    notes: sanitizeString(String(body.notes ?? '')).slice(0, 2000),
+    due_date: body.dueDate ? new Date(body.dueDate).toISOString() : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
   }
 
   const { data, error } = await supabase
@@ -96,10 +143,29 @@ async function handleCreateInvoice(req: Request) {
 
   if (error) {
     logError('invoices-create', error)
-    return errorResponse('Failed to create invoice', 500)
+    return errorResponse(`Failed to create invoice: ${error.message}`, 500)
   }
 
-  return successResponse(data, 'Invoice created successfully')
+  // Persist any initial payment records into the canonical payments table
+  if (incomingPayments.length > 0 && data?.id) {
+    const paymentRows = incomingPayments
+      .filter((p: any) => Number(p?.amountPaid) > 0)
+      .map((p: any) => ({
+        invoice_id: data.id,
+        invoice_number: data.invoice_number,
+        client_name: data.client_name,
+        amount_paid: Number(p.amountPaid),
+        payment_method: String(p.paymentMethod || p.payment_method || 'cash'),
+        reference: sanitizeString(String(p.referenceNumber || p.referenceNumber || '')).slice(0, 100),
+        notes: sanitizeString(String(p.notes || '')).slice(0, 1000),
+        payment_date: p.paymentDate ? new Date(p.paymentDate).toISOString() : new Date().toISOString(),
+      }))
+    if (paymentRows.length > 0) {
+      await supabase.from('payments').insert(paymentRows)
+    }
+  }
+
+  return successResponse(mapInvoice(data), 'Invoice created successfully')
 }
 
 async function handleUpdateInvoice(req: Request) {
@@ -107,7 +173,7 @@ async function handleUpdateInvoice(req: Request) {
 
   const url = new URL(req.url)
   const queryId = url.searchParams.get('id')
-  const body = await parseRequestJSON<Partial<Invoice> & { id?: string }>(req)
+  const body = await parseRequestJSON<any>(req)
   const invoiceId = body?.id || queryId
 
   if (!invoiceId) {
@@ -115,11 +181,38 @@ async function handleUpdateInvoice(req: Request) {
   }
 
   const updateData: any = {}
-  if (body?.status) updateData.status = body.status
-  if (body?.payments) updateData.payments = body.payments
-  if (body?.balanceRemaining !== undefined) updateData.balanceRemaining = body.balanceRemaining
-  if (body?.notes) updateData.notes = sanitizeString(body.notes)
+  if (body?.status && ['draft', 'pending', 'partially_paid', 'paid', 'overdue', 'cancelled'].includes(body.status)) {
+    updateData.status = body.status
+  }
   if (body?.items) updateData.items = body.items
+  if (body?.notes !== undefined) updateData.notes = sanitizeString(String(body.notes)).slice(0, 2000)
+  if (body?.grandTotal !== undefined) updateData.grand_total = Number(body.grandTotal) || 0
+  updateData.updated_at = new Date().toISOString()
+
+  // Recompute balance from the authoritative payments table
+  const { data: pays } = await supabase
+    .from('payments')
+    .select('amount_paid')
+    .eq('invoice_id', invoiceId)
+  const paidSum = (pays || []).reduce((s: number, p: any) => s + (Number(p.amount_paid) || 0), 0)
+
+  if (updateData.grand_total === undefined) {
+    const { data: existing } = await supabase
+      .from('invoices')
+      .select('grand_total')
+      .eq('id', invoiceId)
+      .single()
+    updateData.grand_total = Number(existing?.grand_total || 0)
+  }
+  updateData.balance_remaining = Math.max(0, Number(updateData.grand_total) - paidSum)
+
+  if (!body?.status && updateData.status === undefined) {
+    if (updateData.balance_remaining <= 0 && Number(updateData.grand_total) > 0 && paidSum > 0) {
+      updateData.status = 'paid'
+    } else if (paidSum > 0) {
+      updateData.status = 'partially_paid'
+    }
+  }
 
   const { data, error } = await supabase
     .from('invoices')
@@ -130,10 +223,10 @@ async function handleUpdateInvoice(req: Request) {
 
   if (error) {
     logError('invoices-update', error)
-    return errorResponse('Failed to update invoice', 500)
+    return errorResponse(`Failed to update invoice: ${error.message}`, 500)
   }
 
-  return successResponse(data, 'Invoice updated successfully')
+  return successResponse(mapInvoice(data), 'Invoice updated successfully')
 }
 
 async function handleDeleteInvoice(req: Request) {
@@ -148,6 +241,7 @@ async function handleDeleteInvoice(req: Request) {
     return errorResponse('Invoice ID is required', 400)
   }
 
+  // payments rows cascade via FK ON DELETE CASCADE
   const { error } = await supabase
     .from('invoices')
     .delete()
@@ -155,7 +249,7 @@ async function handleDeleteInvoice(req: Request) {
 
   if (error) {
     logError('invoices-delete', error)
-    return errorResponse('Failed to delete invoice', 500)
+    return errorResponse(`Failed to delete invoice: ${error.message}`, 500)
   }
 
   return successResponse({ success: true }, 'Invoice deleted successfully')

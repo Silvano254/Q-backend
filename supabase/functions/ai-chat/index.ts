@@ -2,6 +2,7 @@
 // Production-hardened Binti AI with live database grounding and structured action execution
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.112.3";
+import { requireAuth } from "../shared/auth-guard.ts";
 
 const ALLOWED_ORIGINS = [
   "http://localhost:5173",
@@ -230,7 +231,18 @@ function extractServerActions(prompt: string, document?: any): any[] {
   // Positive write intent check
   const hasPositiveWriteIntent = /\b(import|save|store|record|commit|insert|add to db|create expense|create invoice|create quote|structure into db|restructure)\b/i.test(p);
   const hasWriteIntent = hasPositiveWriteIntent && !hasNegativeIntent;
-  const isActionPrompt = /filter overdue|check overdue|open quote|view client/i.test(p);
+
+  // Navigation cards must ONLY appear for EXPLICIT imperative commands.
+  // Questions ("how do I create a quote?") and passive mentions
+  // ("what does overdue mean?") must NEVER spawn action cards.
+  const trimmedPrompt = p.trim();
+  const isQuestion =
+    /\?\s*$/.test(trimmedPrompt) ||
+    /^(how|what|why|when|where|who|which|can|could|would|should|is|are|do|does|did|explain|tell me about|give me an overview)\b/i.test(trimmedPrompt);
+  const isActionPrompt =
+    !isQuestion &&
+    /^(filter|show|open|view|list|display|go to|take me to)\b/i.test(trimmedPrompt) &&
+    /(overdue|unpaid|invoice|quote|client)/i.test(p);
 
   if (!hasWriteIntent && !isActionPrompt) {
     return [];
@@ -276,7 +288,7 @@ function extractServerActions(prompt: string, document?: any): any[] {
     }
   }
 
-  if (p.includes("filter overdue") || p.includes("check overdue invoices")) {
+  if (isActionPrompt && /(overdue|unpaid)/i.test(p)) {
     actions.push({
       id: `act-filter-${Date.now()}`,
       type: "filter_invoices",
@@ -307,14 +319,13 @@ serve(async (req) => {
     );
   }
 
-  // 1. Immediate Authentication Guard before any heavy operations
-  const authHeader = req.headers.get("Authorization") || "";
-  const apikeyHeader = req.headers.get("apikey") || "";
-  const incomingToken = (authHeader.replace(/^Bearer\s*/i, "") || apikeyHeader).trim();
-
-  if (!incomingToken) {
+  // 1. Immediate Authentication Guard before any heavy operations.
+  // The Bearer token MUST be a signed user session JWT — the anon/publishable
+  // key alone is NOT accepted, because it identifies the project, not a user.
+  const auth = await requireAuth(req);
+  if (!auth) {
     return new Response(
-      JSON.stringify({ success: false, error: "Unauthorized. Authorization header or apikey is required." }),
+      JSON.stringify({ success: false, error: "Unauthorized. A valid authenticated user session is required." }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 401 }
     );
   }
@@ -396,6 +407,25 @@ serve(async (req) => {
 
     const live = await fetchLiveMetrics(supabase);
     const actions = extractServerActions(cleanPrompt, document);
+
+    // Real thought steps emitted by the backend (not hardcoded in the frontend)
+    const thoughtSteps: Array<{ title: string; detail?: string; status: 'in_progress' | 'complete' | 'failed' }> = [
+      {
+        title: "Fetching live business metrics from database",
+        detail: `Connected to Supabase: ${live.clientCount} clients, ${live.totalInvoices} invoices, ${live.totalQuotes} quotes`,
+        status: 'complete'
+      },
+      {
+        title: "Validating prompt & document payload",
+        detail: document ? `Processing "${document.name || document.fileName || 'attachment'}"` : "No attachment — text query only",
+        status: 'complete'
+      },
+      {
+        title: "Querying Gemini model",
+        detail: `Sending grounded prompt with live metrics to ${GEMINI_PRIMARY_MODELS[0]}`,
+        status: 'in_progress'
+      }
+    ];
 
     let finalPrompt = cleanPrompt;
     if (docContent) {
@@ -559,11 +589,17 @@ LIVE DATABASE METRICS (verified from Supabase):
           const candidate = data?.candidates?.[0];
           const text = candidate?.content?.parts?.[0]?.text;
           if (text) {
+            // Mark the query step as complete now that we have a response
+            const finalSteps = thoughtSteps.map(s => ({
+              ...s,
+              status: s.status === 'in_progress' ? 'complete' as const : s.status
+            }));
             return new Response(
               JSON.stringify({
                 success: true,
                 reply: text,
                 actions,
+                thoughtSteps: finalSteps,
                 meta: {
                   model: modelName,
                   latencyMs: Date.now() - startTime,

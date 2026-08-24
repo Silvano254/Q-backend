@@ -17,16 +17,16 @@ serve(async (req) => {
   const corsResponse = handleCORS(req)
   if (corsResponse) return corsResponse
 
-  if (req.method !== 'POST') {
+  if (req.method !== 'POST' && req.method !== 'GET') {
     return errorResponse('Method not allowed', 405)
   }
 
   try {
-    logRequest('auth-verify', 'POST', req.url)
+    logRequest('auth-verify', req.method, req.url)
 
     const authHeader = req.headers.get('authorization')
     const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
-    const body = await parseRequestJSON<{ token?: string }>(req)
+    const body = req.method === 'POST' ? await parseRequestJSON<{ token?: string }>(req) : null
     const token = body?.token || headerToken
 
     if (!token) {
@@ -34,7 +34,7 @@ serve(async (req) => {
     }
 
     // Verify token
-    const decoded = verifySignedToken(token)
+    const decoded = await verifySignedToken(token)
     if (!decoded) {
       return errorResponse('Invalid or expired token', 401)
     }
@@ -53,7 +53,7 @@ serve(async (req) => {
 
     return successResponse(
       {
-        success: true,
+        valid: true,
         user: {
           id: user.id,
           email: user.email,

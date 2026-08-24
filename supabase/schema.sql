@@ -1,8 +1,42 @@
--- Binti Events Corporate Suite — Supabase PostgreSQL Database Schema
+-- Binti Events Corporate Suite — Supabase PostgreSQL Schema (v2, type-adaptive)
 -- Run this script in your Supabase SQL Editor (https://supabase.com/dashboard/project/_/sql)
+--
+-- IDEMPOTENT + LEGACY-SAFE:
+-- * Safe to re-run; existing tables are never dropped or destructively altered.
+-- * If your project was created with legacy TEXT/VARCHAR primary keys
+--   (e.g. 'inv_1730000000'), this script DETECTS the real column types and:
+--     - adds matching id defaults (gen_random_uuid(), cast to text when needed)
+--     - creates the payments table with an invoice_id type that MATCHES invoices.id
+--     - only adds foreign keys when both sides share a compatible type
+--   so the script succeeds on both fresh UUID databases and legacy text-ID ones.
 
--- 1. Company Settings Table
-CREATE TABLE IF NOT EXISTS company_settings (
+-- ============================================================
+-- 0. Authentication Users Table
+-- Stored credentials are managed by the Edge Function auth layer.
+-- NEVER expose this table to anon/authenticated roles.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.auth_users (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL DEFAULT 'Administrator',
+    role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'manager')),
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    reset_otp TEXT,
+    reset_otp_expiry BIGINT,
+    biometric_registered BOOLEAN NOT NULL DEFAULT FALSE,
+    biometric_credential_id TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+ALTER TABLE public.auth_users ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.auth_users FROM anon, authenticated;
+
+-- ============================================================
+-- 1-5. Core business tables (created WITHOUT cross-table FKs;
+--      FKs are added adaptively further below)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.company_settings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     company_name TEXT NOT NULL DEFAULT 'Binti Events',
     tax_number TEXT,
@@ -13,8 +47,7 @@ CREATE TABLE IF NOT EXISTS company_settings (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 2. Clients Directory Table
-CREATE TABLE IF NOT EXISTS clients (
+CREATE TABLE IF NOT EXISTS public.clients (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     email TEXT,
@@ -28,8 +61,7 @@ CREATE TABLE IF NOT EXISTS clients (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 3. Products & Services Catalog Table
-CREATE TABLE IF NOT EXISTS products (
+CREATE TABLE IF NOT EXISTS public.products (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'Decor & Event Hire',
@@ -41,11 +73,10 @@ CREATE TABLE IF NOT EXISTS products (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 4. Quotations Table
-CREATE TABLE IF NOT EXISTS quotes (
+CREATE TABLE IF NOT EXISTS public.quotes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    quote_number TEXT UNIQUE NOT NULL,
-    client_id UUID REFERENCES clients(id) ON DELETE SET NULL,
+    quote_number TEXT,
+    client_id UUID,
     client_name TEXT NOT NULL,
     grand_total NUMERIC(15, 2) DEFAULT 0.00,
     status TEXT DEFAULT 'draft',
@@ -57,11 +88,10 @@ CREATE TABLE IF NOT EXISTS quotes (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 5. Tax Invoices Table
-CREATE TABLE IF NOT EXISTS invoices (
+CREATE TABLE IF NOT EXISTS public.invoices (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    invoice_number TEXT UNIQUE NOT NULL,
-    client_id UUID REFERENCES clients(id) ON DELETE SET NULL,
+    invoice_number TEXT,
+    client_id UUID,
     client_name TEXT NOT NULL,
     grand_total NUMERIC(15, 2) DEFAULT 0.00,
     balance_remaining NUMERIC(15, 2) DEFAULT 0.00,
@@ -73,52 +103,186 @@ CREATE TABLE IF NOT EXISTS invoices (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 6. Payments Ledger Table
-CREATE TABLE IF NOT EXISTS payments (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    invoice_id UUID REFERENCES invoices(id) ON DELETE CASCADE,
-    invoice_number TEXT NOT NULL,
-    client_name TEXT NOT NULL,
-    amount_paid NUMERIC(15, 2) NOT NULL,
-    payment_method TEXT DEFAULT 'Bank Transfer',
-    reference TEXT,
-    notes TEXT,
-    payment_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+-- ============================================================
+-- 6. Adaptive ID defaults
+-- Fresh installs have UUID ids; legacy databases may have
+-- varchar/text ids. Give BOTH a working default so API inserts
+-- that omit the id always succeed.
+-- ============================================================
+DO $$
+DECLARE
+  t text;
+  col_type text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['clients','products','quotes','invoices']
+  LOOP
+    SELECT c.data_type INTO col_type
+      FROM information_schema.columns c
+     WHERE c.table_schema = 'public' AND c.table_name = t AND c.column_name = 'id';
 
--- Enable Row Level Security (RLS) on all tables
-ALTER TABLE company_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
-ALTER TABLE products ENABLE ROW LEVEL SECURITY;
-ALTER TABLE quotes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
-ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+    IF col_type IS NOT NULL AND lower(col_type) IN ('character varying','text','character') THEN
+      EXECUTE format('ALTER TABLE public.%I ALTER COLUMN id SET DEFAULT gen_random_uuid()::text', t);
+    ELSIF col_type IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE public.%I ALTER COLUMN id SET DEFAULT gen_random_uuid()', t);
+    END IF;
+  END LOOP;
+END $$;
 
--- Never grant anonymous table access. The service-role key is held only by the API
--- server and bypasses RLS; browser clients must use the API.
-DROP POLICY IF EXISTS "Allow anon select company_settings" ON company_settings;
-DROP POLICY IF EXISTS "Allow anon all company_settings" ON company_settings;
-DROP POLICY IF EXISTS "Allow anon select clients" ON clients;
-DROP POLICY IF EXISTS "Allow anon all clients" ON clients;
-DROP POLICY IF EXISTS "Allow anon select products" ON products;
-DROP POLICY IF EXISTS "Allow anon all products" ON products;
-DROP POLICY IF EXISTS "Allow anon select quotes" ON quotes;
-DROP POLICY IF EXISTS "Allow anon all quotes" ON quotes;
-DROP POLICY IF EXISTS "Allow anon select invoices" ON invoices;
-DROP POLICY IF EXISTS "Allow anon all invoices" ON invoices;
-DROP POLICY IF EXISTS "Allow anon select payments" ON payments;
-DROP POLICY IF EXISTS "Allow anon all payments" ON payments;
+-- ============================================================
+-- 7. Payments ledger — created with invoice_id MATCHING invoices.id
+-- ============================================================
+DO $$
+DECLARE
+  inv_id_type text;
+BEGIN
+  SELECT c.data_type INTO inv_id_type
+    FROM information_schema.columns c
+   WHERE c.table_schema = 'public' AND c.table_name = 'invoices' AND c.column_name = 'id';
+
+  IF inv_id_type IS NULL THEN
+    inv_id_type := 'uuid'; -- invoices was just created above as UUID
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.tables
+     WHERE table_schema = 'public' AND table_name = 'payments'
+  ) THEN
+    IF lower(inv_id_type) IN ('character varying','text','character') THEN
+      CREATE TABLE public.payments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        invoice_id TEXT REFERENCES public.invoices(id) ON DELETE CASCADE,
+        invoice_number TEXT NOT NULL,
+        client_name TEXT NOT NULL,
+        amount_paid NUMERIC(15, 2) NOT NULL,
+        payment_method TEXT DEFAULT 'Bank Transfer',
+        reference TEXT,
+        notes TEXT,
+        payment_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+    ELSE
+      CREATE TABLE public.payments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        invoice_id UUID REFERENCES public.invoices(id) ON DELETE CASCADE,
+        invoice_number TEXT NOT NULL,
+        client_name TEXT NOT NULL,
+        amount_paid NUMERIC(15, 2) NOT NULL,
+        payment_method TEXT DEFAULT 'Bank Transfer',
+        reference TEXT,
+        notes TEXT,
+        payment_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+    END IF;
+  ELSE
+    RAISE NOTICE 'payments table already exists — left untouched.';
+  END IF;
+END $$;
+
+-- ============================================================
+-- 8. Adaptive foreign keys (only when both sides are type-compatible)
+-- ============================================================
+DO $$
+DECLARE
+  fk_def record;
+  child_type text;
+  parent_type text;
+  fk_exists boolean;
+BEGIN
+  FOR fk_def IN
+    SELECT * FROM (VALUES
+      ('quotes',  'client_id',  'clients',  'quotes_client_id_fkey'),
+      ('invoices','client_id',  'clients',  'invoices_client_id_fkey')
+    ) AS f(child_tbl, child_col, parent_tbl, conname)
+  LOOP
+    SELECT c.data_type INTO child_type
+      FROM information_schema.columns c
+     WHERE c.table_schema='public' AND c.table_name=fk_def.child_tbl AND c.column_name=fk_def.child_col;
+    SELECT c.data_type INTO parent_type
+      FROM information_schema.columns c
+     WHERE c.table_schema='public' AND c.table_name=fk_def.parent_tbl AND c.column_name='id';
+
+    IF child_type IS NULL OR parent_type IS NULL THEN
+      CONTINUE; -- column/table missing; skip silently
+    END IF;
+
+    SELECT EXISTS (
+      SELECT 1 FROM pg_constraint
+       WHERE conname = fk_def.conname AND conrelid = format('public.%I', fk_def.child_tbl)::regclass
+    ) INTO fk_exists;
+
+    IF fk_exists THEN
+      CONTINUE;
+    END IF;
+
+    IF lower(child_type) = lower(parent_type)
+       OR (lower(child_type) IN ('character varying','text','character')
+           AND lower(parent_type) IN ('character varying','text','character')) THEN
+      BEGIN
+        EXECUTE format(
+          'ALTER TABLE public.%I ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES public.%I(id) ON DELETE SET NULL',
+          fk_def.child_tbl, fk_def.conname, fk_def.child_col, fk_def.parent_tbl
+        );
+      EXCEPTION WHEN others THEN
+        RAISE NOTICE 'FK % skipped: %', fk_def.conname, SQLERRM;
+      END;
+    ELSE
+      RAISE NOTICE 'FK % skipped: incompatible types (%) vs (%)', fk_def.conname, child_type, parent_type;
+    END IF;
+  END LOOP;
+END $$;
+
+-- ============================================================
+-- 9. Unique document numbers (guarded so legacy duplicates don't abort)
+-- ============================================================
+DO $$
+BEGIN
+  CREATE UNIQUE INDEX IF NOT EXISTS quotes_quote_number_uidx ON public.quotes(quote_number);
+EXCEPTION WHEN others THEN
+  RAISE NOTICE 'quotes.quote_number unique index skipped: %', SQLERRM;
+END $$;
+
+DO $$
+BEGIN
+  CREATE UNIQUE INDEX IF NOT EXISTS invoices_invoice_number_uidx ON public.invoices(invoice_number);
+EXCEPTION WHEN others THEN
+  RAISE NOTICE 'invoices.invoice_number unique index skipped: %', SQLERRM;
+END $$;
+
+-- ============================================================
+-- 10. Row Level Security — browser clients must use the API.
+-- The service-role key held by Edge Functions bypasses RLS.
+-- ============================================================
+ALTER TABLE public.company_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.clients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.quotes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invoices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow anon select company_settings" ON public.company_settings;
+DROP POLICY IF EXISTS "Allow anon all company_settings" ON public.company_settings;
+DROP POLICY IF EXISTS "Allow anon select clients" ON public.clients;
+DROP POLICY IF EXISTS "Allow anon all clients" ON public.clients;
+DROP POLICY IF EXISTS "Allow anon select products" ON public.products;
+DROP POLICY IF EXISTS "Allow anon all products" ON public.products;
+DROP POLICY IF EXISTS "Allow anon select quotes" ON public.quotes;
+DROP POLICY IF EXISTS "Allow anon all quotes" ON public.quotes;
+DROP POLICY IF EXISTS "Allow anon select invoices" ON public.invoices;
+DROP POLICY IF EXISTS "Allow anon all invoices" ON public.invoices;
+DROP POLICY IF EXISTS "Allow anon select payments" ON public.payments;
+DROP POLICY IF EXISTS "Allow anon all payments" ON public.payments;
 
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon, authenticated;
 
--- The API stores one validated application-state document. This preserves the
--- current REST contract without losing invoice payments or client metadata.
-CREATE TABLE IF NOT EXISTS app_state (
+-- ============================================================
+-- 11. Application-state singleton (preserves current REST contract)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.app_state (
     id TEXT PRIMARY KEY,
     state JSONB NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     CONSTRAINT app_state_singleton CHECK (id = 'current_state')
 );
-ALTER TABLE app_state ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON app_state FROM anon, authenticated;
+ALTER TABLE public.app_state ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.app_state FROM anon, authenticated;

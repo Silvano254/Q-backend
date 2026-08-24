@@ -12,6 +12,18 @@ verify_jwt = false
 [functions.auth-logout]
 verify_jwt = false
 
+[functions.auth-biometric-login]
+verify_jwt = false
+
+[functions.auth-register-biometric]
+verify_jwt = false
+
+[functions.auth-profile-update]
+verify_jwt = false
+
+[functions.auth-seed-admin]
+verify_jwt = false
+
 [functions.clients]
 verify_jwt = false
 
@@ -22,6 +34,9 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.products]
+verify_jwt = false
+
+[functions.import-products]
 verify_jwt = false
 
 [functions.payments]

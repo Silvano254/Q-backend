@@ -7,25 +7,13 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "esbuild src/index.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "start": "node dist/server.cjs",
+    "deploy": "supabase functions deploy",
+    "deploy:all": "supabase functions deploy --project-ref ltinjyvcrgwcvudrnfby",
+    "db:push": "supabase db push",
     "lint": "tsc --noEmit"
   },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.112.3",
-    "cors": "^2.8.5",
-    "dotenv": "^17.2.3",
-    "express": "^4.21.2",
-    "express-rate-limit": "^8.6.0",
-    "resend": "^3.2.0"
-  },
   "devDependencies": {
-    "@types/cors": "^2.8.17",
-    "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
-    "esbuild": "^0.25.0",
-    "tsx": "^4.21.0",
     "typescript": "~5.8.2"
   }
 }

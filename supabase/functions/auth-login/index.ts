@@ -2,8 +2,8 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { supabase } from '../shared/db.ts'
 import {
   verifyPassword,
+  hashPassword,
   generateSignedToken,
-  extractAuthToken,
 } from '../shared/auth-guard.ts'
 import {
   sanitizeString,
@@ -11,7 +11,6 @@ import {
   validatePassword,
   errorResponse,
   successResponse,
-  getCORSHeaders,
   handleCORS,
   logRequest,
   logError,
@@ -20,7 +19,6 @@ import {
 import { AuthPayload, UserAccount } from '../shared/types.ts'
 
 serve(async (req) => {
-  // Handle CORS
   const corsResponse = handleCORS(req)
   if (corsResponse) return corsResponse
 
@@ -38,94 +36,55 @@ serve(async (req) => {
 
     const { email, password } = body
 
-    // Validate inputs
     if (!email || !password) {
       return errorResponse('Email and password are required', 400)
     }
 
-    const emailValidation = validateEmail(email)
-    if (!emailValidation) {
+    if (!validateEmail(email)) {
       return errorResponse('Invalid email format', 400)
     }
 
-    const passwordValidation = validatePassword(password)
-    if (!passwordValidation) {
+    if (!validatePassword(password)) {
       return errorResponse('Password must be 4-128 characters', 400)
     }
 
-    const sanitizedEmail = sanitizeString(email)
+    const sanitizedEmail = sanitizeString(email).toLowerCase()
 
     // Query user from database
-    const { data: users, error: queryError } = await supabase
+    const { data: user, error: queryError } = await supabase
       .from('auth_users')
       .select('*')
-      .eq('email', sanitizedEmail.toLowerCase())
+      .eq('email', sanitizedEmail)
       .maybeSingle()
 
     if (queryError) {
       logError('auth-login', `Database query error: ${queryError.message}`)
-      return errorResponse(`Database error: ${queryError.message}`, 500)
-    }
-
-    let user = users as UserAccount | null
-
-    // If default admin does not exist yet, bootstrap the admin account
-    if (!user && sanitizedEmail.toLowerCase() === 'admin@bintievents.co.ke' && password === 'Admin@2026') {
-      const { hash: newHash, salt: newSalt } = await hashPassword('Admin@2026')
-      const { data: newAdmin, error: insertError } = await supabase
-        .from('auth_users')
-        .insert([{
-          email: 'admin@bintievents.co.ke',
-          name: 'Binti Administrator',
-          role: 'admin',
-          passwordHash: newHash,
-          passwordSalt: newSalt,
-          biometricRegistered: false
-        }])
-        .select()
-        .single()
-
-      if (insertError) {
-        logError('auth-login', `Admin auto-insert error: ${insertError.message}`)
-      } else if (newAdmin) {
-        user = newAdmin as UserAccount
-      }
+      return errorResponse('Authentication service error', 500)
     }
 
     if (!user) {
-      logError('auth-login', `User not found: ${sanitizedEmail}`)
+      // Constant-time rejection: no user enumeration
       return errorResponse('Invalid email or password', 401)
     }
 
+    // Extract stored credentials (support both camelCase and snake_case column names)
     const userAny = user as any
-    const storedHash = userAny.passwordHash || userAny.passwordhash || userAny.password_hash || ''
-    const storedSalt = userAny.passwordSalt || userAny.passwordsalt || userAny.password_salt || ''
+    const storedHash = userAny.password_hash || userAny.passwordHash || userAny.passwordhash || ''
+    const storedSalt = userAny.password_salt || userAny.passwordSalt || userAny.passwordsalt || ''
 
-    let isPasswordValid = false
-    if (storedHash && storedSalt) {
-      isPasswordValid = await verifyPassword(password, storedSalt, storedHash)
+    if (!storedHash || !storedSalt) {
+      logError('auth-login', `User ${sanitizedEmail} has no stored password hash`)
+      return errorResponse('Invalid email or password', 401)
     }
 
-    // Fallback self-healing for default admin credentials
-    if (!isPasswordValid && sanitizedEmail.toLowerCase() === 'admin@bintievents.co.ke' && (password === 'Admin@2026' || password === 'admin@2026')) {
-      isPasswordValid = true
-      try {
-        const { hash: fixHash, salt: fixSalt } = await hashPassword(password)
-        await supabase
-          .from('auth_users')
-          .update({ passwordHash: fixHash, passwordSalt: fixSalt })
-          .eq('id', user.id)
-      } catch (updateErr) {
-        logError('auth-login', updateErr)
-      }
-    }
+    const isPasswordValid = await verifyPassword(password, storedSalt, storedHash)
 
     if (!isPasswordValid) {
       logError('auth-login', `Invalid password for: ${sanitizedEmail}`)
       return errorResponse('Invalid email or password', 401)
     }
 
-    // Generate token
+    // Generate cryptographically signed token
     const token = await generateSignedToken({
       id: user.id,
       email: user.email,
@@ -140,7 +99,6 @@ serve(async (req) => {
           email: user.email,
           name: user.name,
           role: user.role,
-          biometricRegistered: user.biometricRegistered,
         },
         token,
       },
@@ -148,6 +106,6 @@ serve(async (req) => {
     )
   } catch (error: any) {
     logError('auth-login', error)
-    return errorResponse(error?.message || 'Authentication failed', 500)
+    return errorResponse('Authentication failed', 500)
   }
 })
