@@ -24,7 +24,7 @@ export function validateEmail(email: string): boolean {
  * Validate password strength
  */
 export function validatePassword(password: string): boolean {
-  return password && password.length >= 4 && password.length <= 128
+  return Boolean(password) && password.length >= 4 && password.length <= 128
 }
 
 /**
@@ -80,7 +80,11 @@ export function successResponse<T>(data: T, message?: string) {
 /**
  * Create error response
  */
-export function errorResponse(error: string, status: number = 400) {
+export function errorResponse(
+  error: string,
+  status: number = 400,
+  extraHeaders?: Record<string, string>
+) {
   return new Response(
     JSON.stringify({
       success: false,
@@ -88,7 +92,10 @@ export function errorResponse(error: string, status: number = 400) {
     }),
     {
       status,
-      headers: getCORSHeaders(),
+      headers: {
+        ...getCORSHeaders(),
+        ...(extraHeaders || {}),
+      },
     }
   )
 }

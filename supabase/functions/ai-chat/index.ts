@@ -2,23 +2,31 @@
 // Production-hardened Binti AI with live database grounding and structured action execution
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.112.3";
+import { requireAuth } from "../shared/auth-guard.ts";
 
 const ALLOWED_ORIGINS = [
   "http://localhost:5173",
   "http://localhost:3000",
-  
   "http://localhost:4173",
   "https://bintievents.com",
-  "https://q-frontend-weld.vercel.app/"
+  "https://www.bintievents.com",
+  "https://q-frontend-weld.vercel.app"
 ];
 
 function getCorsHeaders(req: Request) {
-  const origin = req.headers.get("Origin") || "";
-  const allowed = ALLOWED_ORIGINS.includes(origin) || /^https:\/\/[a-z0-9-]+-silvano254s-projects\.vercel\.app$/.test(origin) || origin === "https://quote-sys.vercel.app";
+  // Browsers NEVER include a trailing slash in the Origin header. Normalize
+  // both sides before comparing — a listed origin written as
+  // "https://host/" would otherwise never match "https://host", silently
+  // breaking CORS for that origin (this took down Binti AI on production).
+  const origin = (req.headers.get("Origin") || "").replace(/\/+$/, "");
+  const allowed =
+    ALLOWED_ORIGINS.includes(origin) ||
+    /^https:\/\/[a-z0-9-]+-silvano254s-projects\.vercel\.app$/.test(origin);
   return {
     "Access-Control-Allow-Origin": allowed ? origin : ALLOWED_ORIGINS[0],
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, accept",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
+    Vary: "Origin",
   };
 }
 
@@ -358,14 +366,13 @@ serve(async (req) => {
       );
     }
 
-    const authHeader = req.headers.get("Authorization") || "";
-    const apikeyHeader = req.headers.get("apikey") || "";
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || "";
-    const incomingToken = (authHeader.replace(/^Bearer\s+/i, "") || apikeyHeader).trim();
-
-    if (!incomingToken) {
+    // AUTHENTICATION: verify the signed HS256 session JWT issued by auth-login.
+    // SECURITY: the previous rewrite extracted the token but never validated
+    // it, leaving this endpoint usable by anyone holding the public anon key.
+    const auth = await requireAuth(req);
+    if (!auth) {
       return new Response(
-        JSON.stringify({ success: false, error: "Unauthorized. Authorization header or apikey is required." }),
+        JSON.stringify({ success: false, error: "Unauthorized. A valid authenticated user session is required." }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 401 }
       );
     }
