@@ -2,11 +2,25 @@
 // Production-hardened Binti AI with live database grounding and structured action execution
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.112.3";
-import { requireAuth } from "../shared/auth-guard.ts";
-// Use the SAME permissive CORS as every other Edge Function. A restrictive
-// allow-list here caused silent browser blocks (generic "connection" errors)
-// whenever the deployed frontend domain wasn't in the list.
-import { getCORSHeaders, handleCORS } from "../shared/utils.ts";
+
+const ALLOWED_ORIGINS = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  
+  "http://localhost:4173",
+  "https://bintievents.com",
+  "https://q-frontend-weld.vercel.app/"
+];
+
+function getCorsHeaders(req: Request) {
+  const origin = req.headers.get("Origin") || "";
+  const allowed = ALLOWED_ORIGINS.includes(origin) || /^https:\/\/[a-z0-9-]+-silvano254s-projects\.vercel\.app$/.test(origin) || origin === "https://quote-sys.vercel.app";
+  return {
+    "Access-Control-Allow-Origin": allowed ? origin : ALLOWED_ORIGINS[0],
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, accept",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
+}
 
 const GEMINI_PRIMARY_MODELS = [
   "gemini-2.5-flash",
@@ -98,107 +112,128 @@ async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
   };
 
   try {
-    if (!supabase) return metrics;
-
-    // 1. Settings (company_settings or settings)
+    // 1. Company Settings (try company_settings, fallback to settings)
     try {
-      const res = await supabase.from("company_settings").select("company_name, currency").limit(1).maybeSingle();
-      let settings = res?.data;
+      let { data: settings } = await supabase
+        .from("company_settings")
+        .select("company_name, currency")
+        .limit(1)
+        .maybeSingle();
+
       if (!settings) {
-        const altRes = await supabase.from("settings").select("*").limit(1).maybeSingle();
-        settings = altRes?.data;
+        const { data: altSettings } = await supabase
+          .from("settings")
+          .select("*")
+          .limit(1)
+          .maybeSingle();
+        settings = altSettings;
       }
+
       if (settings) {
         metrics.companyName = settings.company_name || settings.companyName || "Binti Events";
         metrics.currency = settings.currency || "KES";
       }
     } catch (e) {
-      console.warn("[ai-chat] settings warning:", e);
+      console.warn("[ai-chat] settings fetch warning:", e);
     }
 
     // 2. Total Clients
     try {
-      const { count } = await supabase.from("clients").select("id", { count: "exact", head: true });
+      const { count } = await supabase
+        .from("clients")
+        .select("id", { count: "exact", head: true });
       metrics.clientCount = count || 0;
     } catch (e) {
-      console.warn("[ai-chat] clients warning:", e);
+      console.warn("[ai-chat] clients count warning:", e);
     }
 
     // 3. Quotes & Conversion
     try {
-      const { data: quotes } = await supabase.from("quotes").select("id, status");
-      if (Array.isArray(quotes) && quotes.length > 0) {
+      const { data: quotes } = await supabase
+        .from("quotes")
+        .select("id, status");
+      if (quotes && quotes.length > 0) {
         metrics.totalQuotes = quotes.length;
         const converted = quotes.filter((q: any) => {
-          const st = (q?.status || "").toLowerCase();
+          const st = (q.status || "").toLowerCase();
           return st === "converted" || st === "accepted" || st === "approved";
         }).length;
         metrics.conversionRate = Math.round((converted / quotes.length) * 100);
       }
     } catch (e) {
-      console.warn("[ai-chat] quotes warning:", e);
+      console.warn("[ai-chat] quotes fetch warning:", e);
     }
 
     // 4. Invoices (grand_total, balance_remaining, due_date, status)
     try {
-      const { data: invoices } = await supabase.from("invoices").select("*");
-      if (Array.isArray(invoices) && invoices.length > 0) {
+      const { data: invoices } = await supabase
+        .from("invoices")
+        .select("*");
+      
+      if (invoices && invoices.length > 0) {
         metrics.totalInvoices = invoices.length;
-
+        
         metrics.totalRevenue = invoices.reduce((s: number, r: any) => {
-          const val = r?.grand_total ?? r?.grandTotal ?? r?.total_amount ?? r?.totalAmount ?? r?.total ?? 0;
+          const val = r.grand_total ?? r.grandTotal ?? r.total_amount ?? r.totalAmount ?? r.total ?? 0;
           return s + Number(val || 0);
         }, 0);
 
         metrics.pendingBalance = invoices.reduce((s: number, r: any) => {
-          const bal = r?.balance_remaining ?? r?.balanceRemaining ?? r?.balanceDue ?? 0;
+          const bal = r.balance_remaining ?? r.balanceRemaining ?? r.balanceDue ?? 0;
           return s + Number(bal || 0);
         }, 0);
 
         const now = new Date();
         const overdue = invoices.filter((i: any) => {
-          const status = String(i?.status || "").toLowerCase();
+          const status = String(i.status || "").toLowerCase();
           if (status === "paid") return false;
           if (status === "overdue") return true;
 
-          const balance = Number(i?.balance_remaining ?? i?.balanceRemaining ?? i?.balanceDue ?? 0);
-          const rawDue = i?.due_date ?? i?.dueDate;
+          const balance = Number(i.balance_remaining ?? i.balanceRemaining ?? i.balanceDue ?? 0);
+          const rawDue = i.due_date ?? i.dueDate;
           const dueDate = rawDue ? new Date(rawDue) : null;
           return balance > 0 && !!dueDate && !isNaN(dueDate.getTime()) && dueDate < now;
         });
 
         metrics.overdueInvoiceCount = overdue.length;
         metrics.overdueBalance = overdue.reduce((s: number, r: any) => {
-          return s + Number(r?.balance_remaining ?? r?.balanceRemaining ?? r?.balanceDue ?? 0);
+          return s + Number(r.balance_remaining ?? r.balanceRemaining ?? r.balanceDue ?? 0);
         }, 0);
       }
     } catch (e) {
-      console.warn("[ai-chat] invoices warning:", e);
+      console.warn("[ai-chat] invoices fetch warning:", e);
     }
 
     // 5. Payments (authoritative source: payments table)
     try {
-      const { data: payments } = await supabase.from("payments").select("amount_paid");
-      if (Array.isArray(payments) && payments.length > 0) {
-        metrics.totalCashCollected = payments.reduce((sum: number, p: any) => sum + Number(p?.amount_paid || 0), 0);
-      }
+      const { data: payments } = await supabase
+        .from("payments")
+        .select("amount_paid");
+
+      metrics.totalCashCollected = (payments || []).reduce(
+        (sum: number, p: any) => sum + Number(p.amount_paid || 0),
+        0
+      );
+
       metrics.collectionRate = metrics.totalRevenue > 0
         ? Math.round((metrics.totalCashCollected / metrics.totalRevenue) * 100)
         : 100;
     } catch (e) {
-      console.warn("[ai-chat] payments warning:", e);
+      console.warn("[ai-chat] payments fetch warning:", e);
     }
 
     // 6. Products Catalog
     try {
-      const { count } = await supabase.from("products").select("id", { count: "exact", head: true });
+      const { count } = await supabase
+        .from("products")
+        .select("id", { count: "exact", head: true });
       metrics.productCount = count || 0;
     } catch (e) {
-      console.warn("[ai-chat] products warning:", e);
+      console.warn("[ai-chat] products fetch warning:", e);
     }
 
   } catch (err) {
-    console.error("[ai-chat] Live metrics fetch warning:", err);
+    console.error("[ai-chat] Live metrics fetch error:", err);
   }
 
   return metrics;
@@ -209,26 +244,13 @@ async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
  */
 function extractServerActions(prompt: string, document?: any): any[] {
   const actions: any[] = [];
-  const p = prompt.toLowerCase();
-
   // Negative intent check: phrases like "don't save", "do not import", "just analyze", "read only" force write intent off
   const hasNegativeIntent = /\b(don'?t|do not|never|no need to|without|just|only)\s+(import|save|store|record|add|create|write|insert|commit|modifying|changing)\b|\b(read[\s-]only|just analyze|only analyze|don'?t save|do not save|without saving|without importing|no action)\b/i.test(p);
 
   // Positive write intent check
   const hasPositiveWriteIntent = /\b(import|save|store|record|commit|insert|add to db|create expense|create invoice|create quote|structure into db|restructure)\b/i.test(p);
   const hasWriteIntent = hasPositiveWriteIntent && !hasNegativeIntent;
-
-  // Navigation cards must ONLY appear for EXPLICIT imperative commands.
-  // Questions ("how do I create a quote?") and passive mentions
-  // ("what does overdue mean?") must NEVER spawn action cards.
-  const trimmedPrompt = p.trim();
-  const isQuestion =
-    /\?\s*$/.test(trimmedPrompt) ||
-    /^(how|what|why|when|where|who|which|can|could|would|should|is|are|do|does|did|explain|tell me about|give me an overview)\b/i.test(trimmedPrompt);
-  const isActionPrompt =
-    !isQuestion &&
-    /^(filter|show|open|view|list|display|go to|take me to)\b/i.test(trimmedPrompt) &&
-    /(overdue|unpaid|invoice|quote|client)/i.test(p);
+  const isActionPrompt = /filter overdue|check overdue|open quote|view client/i.test(p);
 
   if (!hasWriteIntent && !isActionPrompt) {
     return [];
@@ -274,7 +296,7 @@ function extractServerActions(prompt: string, document?: any): any[] {
     }
   }
 
-  if (isActionPrompt && /(overdue|unpaid)/i.test(p)) {
+  if (p.includes("filter overdue") || p.includes("check overdue invoices")) {
     actions.push({
       id: `act-filter-${Date.now()}`,
       type: "filter_invoices",
@@ -290,28 +312,17 @@ function extractServerActions(prompt: string, document?: any): any[] {
 }
 
 serve(async (req) => {
-  const startTime = Date.now();
-  const corsHeaders = getCORSHeaders();
+  const corsHeaders = getCorsHeaders(req);
 
-  const corsResponse = handleCORS(req);
-  if (corsResponse) return corsResponse;
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
 
   const clientIp = req.headers.get("x-forwarded-for") || req.headers.get("cf-connecting-ip") || "unknown";
   if (!(await checkRateLimit(clientIp))) {
     return new Response(
       JSON.stringify({ success: false, error: "Rate limit exceeded. Please wait a moment." }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 429 }
-    );
-  }
-
-  // 1. Immediate Authentication Guard before any heavy operations.
-  // The Bearer token MUST be a signed user session JWT — the anon/publishable
-  // key alone is NOT accepted, because it identifies the project, not a user.
-  const auth = await requireAuth(req);
-  if (!auth) {
-    return new Response(
-      JSON.stringify({ success: false, error: "Unauthorized. A valid authenticated user session is required." }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 401 }
     );
   }
 
@@ -329,7 +340,7 @@ serve(async (req) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || Deno.env.get("SUPABASE_ANON_KEY") || "";
-    const apiKey = (Deno.env.get("GEMINI_API_KEY") || Deno.env.get("GOOGLE_AI_API_KEY") || Deno.env.get("GEMINI_KEY") || "").trim();
+    const apiKey = (Deno.env.get("GEMINI_API_KEY") || "").trim();
 
     if (!supabaseUrl || !supabaseServiceKey) {
       console.error("[ai-chat] Missing Supabase credentials");
@@ -342,8 +353,20 @@ serve(async (req) => {
     if (!apiKey) {
       console.error("[ai-chat] Missing GEMINI_API_KEY");
       return new Response(
-        JSON.stringify({ success: false, error: "AI service configuration error. Missing GEMINI_API_KEY secret." }),
+        JSON.stringify({ success: false, error: "AI service configuration error." }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 500 }
+      );
+    }
+
+    const authHeader = req.headers.get("Authorization") || "";
+    const apikeyHeader = req.headers.get("apikey") || "";
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || "";
+    const incomingToken = (authHeader.replace(/^Bearer\s+/i, "") || apikeyHeader).trim();
+
+    if (!incomingToken) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Unauthorized. Authorization header or apikey is required." }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 401 }
       );
     }
 
@@ -392,25 +415,6 @@ serve(async (req) => {
 
     const live = await fetchLiveMetrics(supabase);
     const actions = extractServerActions(cleanPrompt, document);
-
-    // Real thought steps emitted by the backend (not hardcoded in the frontend)
-    const thoughtSteps: Array<{ title: string; detail?: string; status: 'in_progress' | 'complete' | 'failed' }> = [
-      {
-        title: "Fetching live business metrics from database",
-        detail: `Connected to Supabase: ${live.clientCount} clients, ${live.totalInvoices} invoices, ${live.totalQuotes} quotes`,
-        status: 'complete'
-      },
-      {
-        title: "Validating prompt & document payload",
-        detail: document ? `Processing "${document.name || document.fileName || 'attachment'}"` : "No attachment — text query only",
-        status: 'complete'
-      },
-      {
-        title: "Querying Gemini model",
-        detail: `Sending grounded prompt with live metrics to ${GEMINI_PRIMARY_MODELS[0]}`,
-        status: 'in_progress'
-      }
-    ];
 
     let finalPrompt = cleanPrompt;
     if (docContent) {
@@ -574,31 +578,8 @@ LIVE DATABASE METRICS (verified from Supabase):
           const candidate = data?.candidates?.[0];
           const text = candidate?.content?.parts?.[0]?.text;
           if (text) {
-            // Mark the query step as complete now that we have a response
-            const finalSteps = thoughtSteps.map(s => ({
-              ...s,
-              status: s.status === 'in_progress' ? 'complete' as const : s.status
-            }));
             return new Response(
-              JSON.stringify({
-                success: true,
-                reply: text,
-                actions,
-                thoughtSteps: finalSteps,
-                meta: {
-                  model: modelName,
-                  latencyMs: Date.now() - startTime,
-                  groundedMetrics: {
-                    company: live.companyName,
-                    currency: live.currency,
-                    clients: live.clientCount,
-                    quotes: live.totalQuotes,
-                    invoices: live.totalInvoices,
-                    cashCollected: live.totalCashCollected,
-                    outstanding: live.pendingBalance
-                  }
-                }
-              }),
+              JSON.stringify({ success: true, reply: text, actions }),
               { headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
           }
