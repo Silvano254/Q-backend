@@ -556,6 +556,8 @@ LIVE DATABASE METRICS (verified from Supabase):
       }
     }
 
+    let lastUpstreamStatus: number | null = null;
+    let lastUpstreamDetail = "";
     for (const modelName of GEMINI_PRIMARY_MODELS) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
       const controller = new AbortController();
@@ -594,9 +596,17 @@ LIVE DATABASE METRICS (verified from Supabase):
           const errText = await response.text();
           console.warn(`[ai-chat] HTTP ${response.status} from ${modelName}:`, errText);
           
+          lastUpstreamStatus = response.status;
+          try {
+            const errJson = JSON.parse(errText);
+            lastUpstreamDetail = String(errJson?.error?.message || errText).slice(0, 200);
+          } catch {
+            lastUpstreamDetail = String(errText || "no body").slice(0, 200);
+          }
+
           if (response.status === 400) {
             return new Response(
-              JSON.stringify({ success: false, error: "Invalid request parameters to AI service." }),
+              JSON.stringify({ success: false, error: `AI provider rejected the request (${modelName}): ${lastUpstreamDetail}` }),
               { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400 }
             );
           }
@@ -607,11 +617,22 @@ LIVE DATABASE METRICS (verified from Supabase):
       } catch (fetchErr: any) {
         clearTimeout(timeoutId);
         console.error(`[ai-chat] Fetch error on ${modelName}:`, fetchErr.message);
+        lastUpstreamStatus = null;
+        lastUpstreamDetail = String(fetchErr?.message || "network error").slice(0, 200);
       }
     }
 
     return new Response(
-      JSON.stringify({ success: false, error: "AI service temporarily unavailable. Please try again." }),
+      JSON.stringify({
+        success: false,
+        error: `AI service temporarily unavailable. Please try again.${
+          lastUpstreamStatus
+            ? ` [upstream ${lastUpstreamStatus}: ${lastUpstreamDetail}]`
+            : lastUpstreamDetail
+              ? ` [${lastUpstreamDetail}]`
+              : ""
+        }`
+      }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 503 }
     );
 
