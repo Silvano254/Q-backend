@@ -149,6 +149,132 @@ interface LiveMetrics {
   productCount: number;
 }
 
+interface RecentRecords {
+  latestInvoices: Array<Record<string, any>>;
+  overdueInvoices: Array<Record<string, any>>;
+  latestQuotes: Array<Record<string, any>>;
+  recentClients: Array<Record<string, any>>;
+  recentPayments: Array<Record<string, any>>;
+}
+
+/**
+ * Fetches compact RECORD-LEVEL context (most recent first) so the model can
+ * answer specific questions — "details of the last invoice", "who owes me",
+ * "latest quotes" — verbatim from real data instead of deflecting.
+ */
+async function fetchRecentRecords(supabase: any): Promise<RecentRecords> {
+  const rec: RecentRecords = {
+    latestInvoices: [],
+    overdueInvoices: [],
+    latestQuotes: [],
+    recentClients: [],
+    recentPayments: []
+  };
+
+  try {
+    let inv: any[] = [];
+    try {
+      const r = await supabase
+        .from("invoices")
+        .select("invoice_number,client_name,issue_date,due_date,grand_total,balance_remaining,status")
+        .order("issue_date", { ascending: false })
+        .limit(20);
+      inv = r.data || [];
+    } catch {
+      const r = await supabase
+        .from("invoices")
+        .select("invoice_number,client_name,issue_date,due_date,grand_total,balance_remaining,status")
+        .limit(20);
+      inv = r.data || [];
+    }
+    rec.latestInvoices = inv.slice(0, 5);
+    const today = new Date().toISOString().slice(0, 10);
+    rec.overdueInvoices = inv
+      .filter((i: any) => {
+        const status = String(i.status || "").toLowerCase();
+        const bal = Number(i.balance_remaining || 0);
+        return status !== "paid" && bal > 0 &&
+          (status === "overdue" || (!!i.due_date && String(i.due_date).slice(0, 10) < today));
+      })
+      .slice(0, 10);
+  } catch (e) {
+    console.warn("[ai-chat] recent invoices warning:", e);
+  }
+
+  try {
+    const { data } = await supabase
+      .from("quotes")
+      .select("quote_number,client_name,grand_total,status")
+      .order("quote_number", { ascending: false })
+      .limit(5);
+    rec.latestQuotes = data || [];
+  } catch (e) {
+    console.warn("[ai-chat] recent quotes warning:", e);
+  }
+
+  try {
+    const { data } = await supabase
+      .from("clients")
+      .select("name,company,phone")
+      .limit(8);
+    rec.recentClients = data || [];
+  } catch (e) {
+    console.warn("[ai-chat] recent clients warning:", e);
+  }
+
+  try {
+    const { data } = await supabase
+      .from("payments")
+      .select("amount_paid,payment_date,reference_number")
+      .order("payment_date", { ascending: false })
+      .limit(5);
+    rec.recentPayments = data || [];
+  } catch (e) {
+    console.warn("[ai-chat] recent payments warning:", e);
+  }
+
+  return rec;
+}
+
+function formatRecordsBlock(r: RecentRecords): string {
+  const money = (n: any) => `KES ${Number(n || 0).toLocaleString()}`;
+  const lines: string[] = [];
+
+  if (r.latestInvoices.length > 0) {
+    lines.push("LATEST INVOICES:");
+    for (const i of r.latestInvoices) {
+      lines.push(`- ${i.invoice_number} | ${i.client_name} | issued ${i.issue_date ?? "n/a"} | total ${money(i.grand_total)} | balance ${money(i.balance_remaining)} | ${i.status || "n/a"}${i.due_date ? ` | due ${i.due_date}` : ""}`);
+    }
+  }
+  if (r.overdueInvoices.length > 0) {
+    lines.push("OVERDUE INVOICES:");
+    for (const i of r.overdueInvoices) {
+      lines.push(`- ${i.invoice_number} | ${i.client_name} | balance ${money(i.balance_remaining)}${i.due_date ? ` | was due ${i.due_date}` : ""}`);
+    }
+  }
+  if (r.latestQuotes.length > 0) {
+    lines.push("LATEST QUOTES:");
+    for (const q of r.latestQuotes) {
+      lines.push(`- ${q.quote_number} | ${q.client_name} | ${money(q.grand_total)} | ${q.status || "n/a"}`);
+    }
+  }
+  if (r.recentClients.length > 0) {
+    lines.push("CLIENTS ON FILE:");
+    for (const c of r.recentClients) {
+      lines.push(`- ${c.name}${c.company ? ` (${c.company})` : ""}${c.phone ? ` | phone ${c.phone}` : ""}`);
+    }
+  }
+  if (r.recentPayments.length > 0) {
+    lines.push("RECENT PAYMENTS:");
+    for (const p of r.recentPayments) {
+      lines.push(`- ${money(p.amount_paid)}${p.payment_date ? ` on ${p.payment_date}` : ""}${p.reference_number ? ` | ref ${p.reference_number}` : ""}`);
+    }
+  }
+
+  if (lines.length === 0) return "";
+  return "LIVE RECORD-LEVEL CONTEXT (verbatim recent records):\n" + lines.join("\n") + "\n";
+}
+
 async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
   const metrics: LiveMetrics = {
     companyName: "Binti Events",
@@ -544,7 +670,11 @@ serve(async (req) => {
       }
     }
 
-    const live = await fetchLiveMetrics(supabase);
+    const [live, recent] = await Promise.all([
+      fetchLiveMetrics(supabase),
+      fetchRecentRecords(supabase)
+    ]);
+    const recordsBlock = formatRecordsBlock(recent);
     const actions = extractServerActions(cleanPrompt, document);
 
     let finalPrompt = cleanPrompt;
@@ -590,6 +720,11 @@ LIVE DATABASE METRICS (verified from Supabase):
 - Overdue Invoices: ${live.overdueInvoiceCount} (${live.currency} ${live.overdueBalance.toLocaleString()})
 - Product Catalog: ${live.productCount} items
 - Expense Tracking: Not stored in database schema
+
+${recordsBlock}
+RECORD-LEVEL QUESTIONS: When the user asks about a SPECIFIC, LATEST or RECENT invoice, quote, client or payment, answer using EXACTLY the records in LIVE RECORD-LEVEL CONTEXT above — quote numbers, names, dates and amounts verbatim. If the needed record is not present there, state precisely which identifier you need (e.g. an invoice number) and stop. Do NOT ask users to upload documents, and do NOT claim you lack record access when records are listed above.
+
+RESPONSE COMPLETENESS: Deliver complete tables, lists and sentences. Never cut off mid-item or mid-sentence; if space is tight, summarize compactly instead of truncating.
 
 QUOTE CREATION PROTOCOL (agentic):
 When the user asks to CREATE, DRAFT or PREPARE a quotation/quote with items or services:
@@ -672,6 +807,12 @@ Omit unknown optional fields rather than inventing values. The platform converts
       console.log("[ai-chat] Discovered models:", candidateModels.join(", "));
     } else {
       candidateModels = [...GEMINI_PRIMARY_MODELS];
+    }
+
+    // Thinking/new-generation models support larger output windows — raise
+    // the ceiling so long tables/lists aren't truncated mid-answer.
+    if (candidateModels.some((m: string) => /gemini-(2\.5|3)/i.test(m))) {
+      generationPayload.generationConfig.maxOutputTokens = 8192;
     }
 
     if (isStreamRequested) {
