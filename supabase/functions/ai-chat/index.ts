@@ -297,6 +297,83 @@ async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
 /**
  * Action cards ONLY generated if the user explicitly requested a database write or mutation action.
  */
+const QUOTE_TAG_OPEN = "[QUOTE_JSON]";
+const QUOTE_TAG_CLOSE = "[/QUOTE_JSON]";
+
+/**
+ * Detects and converts the model's [QUOTE_JSON]…[/QUOTE_JSON] block into a
+ * schema-ready create_quote AgentAction (BillingItem-compatible), returning
+ * the user-facing text with the machine block stripped out.
+ */
+function buildQuoteAction(raw: string): { cleanText: string; action: any | null } {
+  const open = raw.indexOf(QUOTE_TAG_OPEN);
+  if (open === -1) return { cleanText: raw, action: null };
+  const afterOpen = raw.slice(open + QUOTE_TAG_OPEN.length);
+  const closeIdx = afterOpen.indexOf(QUOTE_TAG_CLOSE);
+  const jsonCandidate = closeIdx === -1 ? afterOpen : afterOpen.slice(0, closeIdx);
+  const tail = closeIdx === -1 ? "" : afterOpen.slice(closeIdx + QUOTE_TAG_CLOSE.length);
+  const cleanText = (raw.slice(0, open) + " " + tail)
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  let action: any = null;
+  try {
+    const q = JSON.parse(jsonCandidate.trim());
+    const srcItems = Array.isArray(q.items) ? q.items : [];
+    const items = srcItems
+      .map((it: any, i: number) => {
+        const quantity = Number(it?.quantity) || 1;
+        const unitPrice = Number(it?.unitPrice) || 0;
+        const amount = Math.round(quantity * unitPrice * 100) / 100;
+        return {
+          id: `ai-q-${Date.now()}-${i}`,
+          description: String(it?.description ?? `Item ${i + 1}`).slice(0, 300),
+          quantity,
+          unitPrice,
+          discount: 0,
+          tax: 0,
+          amount
+        };
+      })
+      .filter((it: any) => it.unitPrice > 0 || it.quantity > 0);
+
+    if (items.length > 0) {
+      const grandTotal = Math.round(items.reduce((s: number, it: any) => s + it.amount, 0) * 100) / 100;
+      const currency = typeof q.currency === "string" && q.currency ? q.currency : "KES";
+      const metaBits = [
+        q.eventName ? `Event: ${q.eventName}` : "",
+        q.eventDate ? `Date: ${q.eventDate}` : "",
+        q.phone ? `Phone: ${q.phone}` : ""
+      ].filter(Boolean).join(" • ");
+      const orgSuffix = q.company ? ` (${q.company})` : "";
+      action = {
+        id: `act-quote-${Date.now()}`,
+        type: "create_quote",
+        label: `Create Quote – ${currency} ${grandTotal.toLocaleString()}`,
+        icon: "file",
+        isMutation: true,
+        riskLevel: "medium",
+        summary: `${items.length} line items for ${q.clientName || "client"}${orgSuffix}.${metaBits ? ` ${metaBits}.` : ""}`,
+        payload: {
+          clientName: q.clientName || q.company || "Client",
+          company: q.company || "",
+          phone: q.phone || "",
+          eventName: q.eventName || "",
+          eventDate: q.eventDate || "",
+          currency,
+          items,
+          grandTotal,
+          notes: metaBits || undefined
+        }
+      };
+    }
+  } catch (err) {
+    console.warn("[ai-chat] Failed to parse QUOTE_JSON block:", err);
+  }
+  return { cleanText, action };
+}
+
 function extractServerActions(prompt: string, document?: any): any[] {
   const actions: any[] = [];
   // Negative intent check: phrases like "don't save", "do not import", "just analyze", "read only" force write intent off
@@ -512,7 +589,15 @@ LIVE DATABASE METRICS (verified from Supabase):
 - Quote Conversion Rate: ${live.conversionRate}%
 - Overdue Invoices: ${live.overdueInvoiceCount} (${live.currency} ${live.overdueBalance.toLocaleString()})
 - Product Catalog: ${live.productCount} items
-- Expense Tracking: Not stored in database schema`;
+- Expense Tracking: Not stored in database schema
+
+QUOTE CREATION PROTOCOL (agentic):
+When the user asks to CREATE, DRAFT or PREPARE a quotation/quote with items or services:
+1. Extract EVERY line item into (description, quantity, unitPrice) as NUMBERS. Expand shorthand money: 10k→10000, 25k→25000, 2k→2000. Parse patterns like "12 exhibition tents @2k =24k" → qty 12, unitPrice 2000; "Seats 150 * 120 - 18k" → qty 150, unitPrice 120.
+2. REQUIRED client fields: organization name AND contact person. Scan the ENTIRE conversation history for them. If either is missing, do NOT output the data block — instead reply with ONE short question asking for exactly what is missing.
+3. Once required fields are present, write a 1–2 sentence confirmation, then on a NEW line output exactly one machine block (never inside code fences, never duplicated):
+[QUOTE_JSON]{"clientName":"<contact person>","company":"<organization>","phone":"<phone if known>","eventName":"<event title if any>","eventDate":"<YYYY-MM-DD if known>","currency":"KES","items":[{"description":"...","quantity":0,"unitPrice":0}]}[/QUOTE_JSON]
+Omit unknown optional fields rather than inventing values. The platform converts this block into an interactive approval card automatically — NEVER describe or mention the block itself to the user.`;
 
     const contents: any[] = [];
     if (Array.isArray(history)) {
@@ -637,6 +722,52 @@ LIVE DATABASE METRICS (verified from Supabase):
           let sawAnyText = false;
           let frameCount = 0;
 
+          // Hold-back machinery for the [QUOTE_JSON] machine block: withhold a
+          // sliding tail so opening-tag characters never leak into the live
+          // bubble, and divert captured payloads away from visible tokens.
+          let pendingTail = "";
+          let jsonCapture: string | null = null;
+
+          const emitVisible = (out: any, text: string) => {
+            if (!text) return;
+            sawAnyText = true;
+            try {
+              out.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ text })}\n\n`));
+            } catch { /* client disconnected */ }
+          };
+
+          const routeDelta = (out: any, delta: string) => {
+            let remaining = delta;
+            while (remaining.length > 0) {
+              if (jsonCapture !== null) {
+                // Already inside a machine block — divert to the capture buffer.
+                jsonCapture += remaining;
+                remaining = "";
+                continue;
+              }
+              const combined = pendingTail + remaining;
+              const openIdx = combined.indexOf(QUOTE_TAG_OPEN);
+              if (openIdx !== -1) {
+                emitVisible(out, combined.slice(0, openIdx));
+                jsonCapture = combined.slice(openIdx);
+                pendingTail = "";
+                remaining = "";
+                continue;
+              }
+              // Withhold just enough trailing characters that a split opening
+              // tag cannot slip through unseen.
+              const holdLen = QUOTE_TAG_OPEN.length - 1;
+              if (combined.length > holdLen) {
+                const visible = combined.slice(0, combined.length - holdLen);
+                emitVisible(out, visible);
+                pendingTail = combined.slice(combined.length - holdLen);
+              } else {
+                pendingTail = combined;
+              }
+              remaining = "";
+            }
+          };
+
           const processFrame = (out: any, block: string) => {
             for (const rawLine of block.split("\n")) {
               const line = rawLine.trim();
@@ -654,12 +785,7 @@ LIVE DATABASE METRICS (verified from Supabase):
                   p && typeof p.text === "string" && p.thought !== true ? p.text : ""
                 )
                 .join("");
-              if (delta) {
-                sawAnyText = true;
-                try {
-                  out.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ text: delta })}\n\n`));
-                } catch { /* client disconnected */ }
-              }
+              if (delta) routeDelta(out, delta);
             }
           };
 
@@ -679,17 +805,34 @@ LIVE DATABASE METRICS (verified from Supabase):
             flush(out) {
               // Handle a trailing frame that lacked its closing blank line.
               if (sseBuffer.trim()) processFrame(out, sseBuffer);
+
+              // Finalize any held-back QUOTE_JSON payload captured mid-stream.
+              if (jsonCapture !== null || pendingTail) {
+                jsonCapture = (jsonCapture ?? "") + pendingTail;
+                pendingTail = "";
+              }
+              let quoteAction: any = null;
+              if (jsonCapture) {
+                quoteAction = buildQuoteAction(jsonCapture).action;
+              }
+
               try {
-                if (!sawAnyText) {
-                  // Self-describing failure: frame telemetry pinpoints whether
-                  // upstream sent nothing at all vs. unparseable framing.
+                const finalActions = quoteAction ? [quoteAction, ...actions] : actions;
+                if (!sawAnyText && !quoteAction) {
                   out.enqueue(encoder.encode(
                     `event: error\ndata: ${JSON.stringify({ error: `${streamModel} produced no visible text (frames=${frameCount})` })}\n\n`
                   ));
                 } else {
-                  out.enqueue(encoder.encode(
-                    `event: complete\ndata: ${JSON.stringify({ success: true, actions, thoughtSteps: [], model: streamModel })}\n\n`
-                  ));
+                  const body: any = {
+                    success: true,
+                    actions: finalActions,
+                    thoughtSteps: [],
+                    model: streamModel
+                  };
+                  if (!sawAnyText && quoteAction) {
+                    body.reply = "I've structured the quotation and staged it below for your approval.";
+                  }
+                  out.enqueue(encoder.encode(`event: complete\ndata: ${JSON.stringify(body)}\n\n`));
                 }
               } catch { /* client disconnected */ }
             }
@@ -771,12 +914,22 @@ LIVE DATABASE METRICS (verified from Supabase):
           }
 
           const candidate = data?.candidates?.[0];
-          const text = candidate?.content?.parts?.[0]?.text;
+          // Join ALL text parts (multi-part responses were previously
+          // truncated to parts[0]) and exclude internal thought parts.
+          const text = (candidate?.content?.parts || [])
+            .map((p: any) => (p && typeof p.text === "string" && p.thought !== true) ? p.text : "")
+            .join("");
           if (text) {
-            return new Response(
-              JSON.stringify({ success: true, reply: text, actions }),
-              { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-            );
+            const { cleanText, action: quoteAction } = buildQuoteAction(text);
+            const finalActions = quoteAction ? [quoteAction, ...actions] : actions;
+            const reply = cleanText.trim()
+              || (quoteAction ? "I've structured the quotation and staged it below for your approval." : "");
+            if (reply) {
+              return new Response(
+                JSON.stringify({ success: true, reply, actions: finalActions }),
+                { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+              );
+            }
           }
         } else {
           const errText = await response.text();
