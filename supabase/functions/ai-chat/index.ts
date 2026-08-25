@@ -590,6 +590,8 @@ LIVE DATABASE METRICS (verified from Supabase):
     }
 
     if (isStreamRequested) {
+      let lastStreamStatus: number | null = null;
+      let lastStreamDetail = "";
       for (const streamModel of candidateModels) {
         const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${streamModel}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
         const controller = new AbortController();
@@ -612,23 +614,91 @@ LIVE DATABASE METRICS (verified from Supabase):
             ),
             signal: controller.signal
           });
+
+          if (!(upstreamRes.ok && upstreamRes.body)) {
+            clearTimeout(timeoutId);
+            lastStreamStatus = upstreamRes.status;
+            lastStreamDetail = (await upstreamRes.text().catch(() => "")).slice(0, 200);
+            console.warn(`[ai-chat] Stream candidate ${streamModel} failed: ${upstreamRes.status}`);
+            continue;
+          }
+
+          // Stop the per-model timer once headers arrive — the stream itself
+          // now runs at Gemini's pace and must NOT be aborted mid-generation.
           clearTimeout(timeoutId);
 
-          if (upstreamRes.ok && upstreamRes.body) {
-            return new Response(upstreamRes.body, {
-              headers: {
-                ...corsHeaders,
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive"
+          // Translate Gemini's raw SSE into Binti's own protocol:
+          //   event: token     {"text":"..."}                     (many)
+          //   event: complete  {"success":true,"actions":[...]}   (terminal)
+          //   event: error     {"error":"reason"}                 (terminal)
+          const decoder = new TextDecoder();
+          const encoder = new TextEncoder();
+          let sseBuffer = "";
+          let sawAnyText = false;
+
+          const transform = new TransformStream({
+            transform(chunk, out) {
+              sseBuffer += decoder.decode(chunk, { stream: true });
+              let sep: number;
+              while ((sep = sseBuffer.indexOf("\n\n")) !== -1) {
+                const block = sseBuffer.slice(0, sep);
+                sseBuffer = sseBuffer.slice(sep + 2);
+                for (const line of block.split("\n")) {
+                  if (!line.startsWith("data:")) continue;
+                  const payload = line.slice(5).trim();
+                  if (!payload) continue;
+                  let parsed: any = null;
+                  try { parsed = JSON.parse(payload); } catch { continue; }
+                  const parts = parsed?.candidates?.[0]?.content?.parts || [];
+                  const delta = parts.map((p: any) => String(p?.text ?? "")).join("");
+                  if (delta) {
+                    sawAnyText = true;
+                    try {
+                      out.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ text: delta })}\n\n`));
+                    } catch { /* client disconnected */ }
+                  }
+                }
               }
-            });
-          }
-        } catch (sErr) {
+            },
+            flush(out) {
+              try {
+                out.enqueue(encoder.encode(
+                  `event: complete\ndata: ${JSON.stringify({ success: true, actions, thoughtSteps: [], model: streamModel })}\n\n`
+                ));
+              } catch { /* client disconnected */ }
+            }
+          });
+
+          console.log(`[ai-chat] Streaming via ${streamModel}`);
+          return new Response(upstreamRes.body.pipeThrough(transform), {
+            status: 200,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+              "Connection": "keep-alive",
+              "X-Accel-Buffering": "no"
+            }
+          });
+        } catch (sErr: any) {
           clearTimeout(timeoutId);
+          lastStreamStatus = null;
+          lastStreamDetail = String(sErr?.message || "network error").slice(0, 200);
           console.warn(`[ai-chat] Stream failover from ${streamModel}:`, sErr);
         }
       }
+
+      // Every candidate failed while streaming was requested — do NOT fall
+      // through and silently double-attempt in JSON mode; report clearly.
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: `AI service temporarily unavailable. Please try again.${
+            lastStreamStatus ? ` [upstream ${lastStreamStatus}: ${lastStreamDetail}]` : lastStreamDetail ? ` [${lastStreamDetail}]` : ""
+          }`
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 503 }
+      );
     }
 
     let lastUpstreamStatus: number | null = null;
