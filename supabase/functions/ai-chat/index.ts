@@ -1272,14 +1272,20 @@ Omit unknown optional fields rather than inventing values. The platform converts
               // Handle a trailing frame that lacked its closing blank line.
               if (sseBuffer.trim()) processFrame(out, sseBuffer);
 
-              // Finalize any held-back QUOTE_JSON payload captured mid-stream.
-              if (jsonCapture !== null || pendingTail) {
-                jsonCapture = (jsonCapture ?? "") + pendingTail;
-                pendingTail = "";
-              }
+              // Finalize held-back text. Two distinct cases:
+              //   • jsonCapture set  → a real [QUOTE_JSON] block was opened;
+              //     everything withheld belongs to the machine payload.
+              //   • only pendingTail → ordinary visible text; RELEASE it so
+              //     reply endings (greetings especially) are never truncated.
               let quoteAction: any = null;
-              if (jsonCapture) {
+              if (jsonCapture !== null) {
+                jsonCapture += pendingTail;
+                pendingTail = "";
                 quoteAction = buildQuoteAction(jsonCapture).action;
+              } else if (pendingTail) {
+                const tail = pendingTail;
+                pendingTail = "";
+                emitVisible(out, tail);
               }
 
               // A stream ending without STOP means Gemini was cut off
