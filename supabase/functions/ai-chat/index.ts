@@ -253,12 +253,12 @@ async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
 function extractServerActions(prompt: string, document?: any): any[] {
   const actions: any[] = [];
   // Negative intent check: phrases like "don't save", "do not import", "just analyze", "read only" force write intent off
-  const hasNegativeIntent = /\b(don'?t|do not|never|no need to|without|just|only)\s+(import|save|store|record|add|create|write|insert|commit|modifying|changing)\b|\b(read[\s-]only|just analyze|only analyze|don'?t save|do not save|without saving|without importing|no action)\b/i.test(p);
+  const hasNegativeIntent = /\b(don'?t|do not|never|no need to|without|just|only)\s+(import|save|store|record|add|create|write|insert|commit|modifying|changing)\b|\b(read[\s-]only|just analyze|only analyze|don'?t save|do not save|without saving|without importing|no action)\b/i.test(prompt);
 
   // Positive write intent check
-  const hasPositiveWriteIntent = /\b(import|save|store|record|commit|insert|add to db|create expense|create invoice|create quote|structure into db|restructure)\b/i.test(p);
+  const hasPositiveWriteIntent = /\b(import|save|store|record|commit|insert|add to db|create expense|create invoice|create quote|structure into db|restructure)\b/i.test(prompt);
   const hasWriteIntent = hasPositiveWriteIntent && !hasNegativeIntent;
-  const isActionPrompt = /filter overdue|check overdue|open quote|view client/i.test(p);
+  const isActionPrompt = /filter overdue|check overdue|open quote|view client/i.test(prompt);
 
   if (!hasWriteIntent && !isActionPrompt) {
     return [];
@@ -269,7 +269,7 @@ function extractServerActions(prompt: string, document?: any): any[] {
     const isImage = (document.mimeType || "").startsWith("image/");
     const finDoc = document.financialDoc || document.extractedData?.financialDoc;
 
-    if ((isImage || docName.includes("receipt") || docName.includes("expense") || p.includes("expense") || p.includes("receipt")) && finDoc?.totalAmount && finDoc.totalAmount > 0) {
+    if ((isImage || docName.includes("receipt") || docName.includes("expense") || prompt.includes("expense") || prompt.includes("receipt")) && finDoc?.totalAmount && finDoc.totalAmount > 0) {
       actions.push({
         id: `act-exp-${Date.now()}`,
         type: "create_expense",
@@ -304,7 +304,7 @@ function extractServerActions(prompt: string, document?: any): any[] {
     }
   }
 
-  if (p.includes("filter overdue") || p.includes("check overdue invoices")) {
+  if (prompt.includes("filter overdue") || prompt.includes("check overdue invoices")) {
     actions.push({
       id: `act-filter-${Date.now()}`,
       type: "filter_invoices",
@@ -617,8 +617,10 @@ LIVE DATABASE METRICS (verified from Supabase):
 
   } catch (err: any) {
     console.error("[ai-chat] Unhandled error:", err);
+    // Include the reason in the response so 500s are self-describing for the
+    // client banner instead of hiding behind an opaque generic message.
     return new Response(
-      JSON.stringify({ success: false, error: "Internal server error." }),
+      JSON.stringify({ success: false, error: `Internal server error: ${err?.message || String(err)}` }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 500 }
     );
   }
