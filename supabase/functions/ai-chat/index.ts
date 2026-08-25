@@ -298,7 +298,19 @@ function money(n: any): string {
   return `KES ${Number(n || 0).toLocaleString()}`;
 }
 
-const INVOICE_COLS = "invoice_number,client_name,issue_date,due_date,grand_total,balance_remaining,status";
+/** Line-item arrays are stored as JSONB — normalize string/array forms. */
+function parseItems(raw: any): any[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  try {
+    const p = JSON.parse(raw);
+    return Array.isArray(p) ? p : [];
+  } catch {
+    return [];
+  }
+}
+
+const INVOICE_COLS = "invoice_number,client_name,issue_date,due_date,grand_total,balance_remaining,status,items";
 
 const TOOLS: Tool[] = [
   {
@@ -314,9 +326,21 @@ const TOOLS: Tool[] = [
         .limit(3);
       if (error) throw error;
       if (!data || data.length === 0) return [`No invoice matching "${tok}" was found.`];
-      return [`INVOICE LOOKUP — ${tok}:`].concat(data.map((i: any) =>
-        `- ${i.invoice_number} | ${i.client_name} | issued ${i.issue_date ?? "n/a"} | total ${money(i.grand_total)} | balance ${money(i.balance_remaining)} | ${i.status || "n/a"}${i.due_date ? ` | due ${i.due_date}` : ""}`
-      ));
+      const lines = [`INVOICE LOOKUP — ${tok}:`];
+      for (const i of data) {
+        lines.push(`- ${i.invoice_number} | ${i.client_name} | issued ${i.issue_date ?? "n/a"} | total ${money(i.grand_total)} | balance ${money(i.balance_remaining)} | ${i.status || "n/a"}${i.due_date ? ` | due ${i.due_date}` : ""}`);
+        const rows = parseItems(i.items).slice(0, 12);
+        if (rows.length > 0) {
+          lines.push(`    Line items (${rows.length}):`);
+          for (const it of rows) {
+            const qty = Number(it?.quantity ?? it?.qty ?? 1) || 1;
+            const price = Number(it?.unitPrice ?? it?.unit_price ?? 0);
+            const amt = Number(it?.amount) || Math.round(qty * price * 100) / 100;
+            lines.push(`    • ${String(it?.description ?? "item")} ×${qty} @ ${money(price)} = ${money(amt)}`);
+          }
+        }
+      }
+      return lines;
     }
   },
   {
@@ -325,16 +349,38 @@ const TOOLS: Tool[] = [
     run: async (db, p) => {
       const tok = extractDocToken(p, "QT")!;
       const digits = tok.replace(/^QT-?/i, "");
-      const { data, error } = await db
-        .from("quotes")
-        .select("quote_number,client_name,grand_total,status")
-        .ilike("quote_number", `%${digits}%`)
-        .limit(3);
-      if (error) throw error;
-      if (!data || data.length === 0) return [`No quote matching "${tok}" was found.`];
-      return [`QUOTE LOOKUP — ${tok}:`].concat(data.map((q: any) =>
-        `- ${q.quote_number} | ${q.client_name} | ${money(q.grand_total)} | ${q.status || "n/a"}`
-      ));
+      let data: any[] = [];
+      try {
+        // items column may not exist on older schemas — degrade gracefully.
+        const withItems = await db
+          .from("quotes")
+          .select("quote_number,client_name,grand_total,status,items")
+          .ilike("quote_number", `%${digits}%`)
+          .limit(3);
+        data = withItems.data || [];
+      } catch {
+        const fallback = await db
+          .from("quotes")
+          .select("quote_number,client_name,grand_total,status")
+          .ilike("quote_number", `%${digits}%`)
+          .limit(3);
+        data = fallback.data || [];
+      }
+      if (data.length === 0) return [`No quote matching "${tok}" was found.`];
+      const lines = [`QUOTE LOOKUP — ${tok}:`];
+      for (const q of data) {
+        lines.push(`- ${q.quote_number} | ${q.client_name} | ${money(q.grand_total)} | ${q.status || "n/a"}`);
+        const rows = parseItems(q.items).slice(0, 12);
+        if (rows.length > 0) {
+          lines.push(`    Line items (${rows.length}):`);
+          for (const it of rows) {
+            const qty = Number(it?.quantity ?? it?.qty ?? 1) || 1;
+            const price = Number(it?.unitPrice ?? it?.unit_price ?? 0);
+            lines.push(`    • ${String(it?.description ?? "item")} ×${qty} @ ${money(price)}`);
+          }
+        }
+      }
+      return lines;
     }
   },
   {
@@ -1138,6 +1184,7 @@ Omit unknown optional fields rather than inventing values. The platform converts
           let sseBuffer = "";
           let sawAnyText = false;
           let frameCount = 0;
+          let lastFinish = "";
 
           // Hold-back machinery for the [QUOTE_JSON] machine block: withhold a
           // sliding tail so opening-tag characters never leak into the live
@@ -1194,6 +1241,8 @@ Omit unknown optional fields rather than inventing values. The platform converts
               frameCount++;
               let parsed: any = null;
               try { parsed = JSON.parse(payload); } catch { continue; }
+              const fr = parsed?.candidates?.[0]?.finishReason;
+              if (fr) lastFinish = String(fr);
               const parts = parsed?.candidates?.[0]?.content?.parts || [];
               // Exclude internal reasoning parts ("thought": true) — only
               // user-visible answer text may flow to the client.
@@ -1233,18 +1282,26 @@ Omit unknown optional fields rather than inventing values. The platform converts
                 quoteAction = buildQuoteAction(jsonCapture).action;
               }
 
+              // A stream ending without STOP means Gemini was cut off
+              // (connection drop / token ceiling) — surface it so the client
+              // can transparently continue the generation.
+              const truncated = sawAnyText && !/STOP/i.test(lastFinish);
+              const finishNote = lastFinish ? ` (finishReason: ${lastFinish})` : "";
+
               try {
                 const finalActions = quoteAction ? [quoteAction, ...actions] : actions;
                 if (!sawAnyText && !quoteAction) {
                   out.enqueue(encoder.encode(
-                    `event: error\ndata: ${JSON.stringify({ error: `${streamModel} produced no visible text (frames=${frameCount})` })}\n\n`
+                    `event: error\ndata: ${JSON.stringify({ error: `${streamModel} produced no visible text (frames=${frameCount})${finishNote}` })}\n\n`
                   ));
                 } else {
                   const body: any = {
                     success: true,
                     actions: finalActions,
                     thoughtSteps: [],
-                    model: streamModel
+                    model: streamModel,
+                    truncated,
+                    finishReason: lastFinish
                   };
                   if (!sawAnyText && quoteAction) {
                     body.reply = "I've structured the quotation and staged it below for your approval.";
