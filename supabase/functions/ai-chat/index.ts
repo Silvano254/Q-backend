@@ -635,36 +635,62 @@ LIVE DATABASE METRICS (verified from Supabase):
           const encoder = new TextEncoder();
           let sseBuffer = "";
           let sawAnyText = false;
+          let frameCount = 0;
+
+          const processFrame = (out: any, block: string) => {
+            for (const rawLine of block.split("\n")) {
+              const line = rawLine.trim();
+              if (!line.startsWith("data:")) continue;
+              const payload = line.slice(5).trim();
+              if (!payload || payload === "[DONE]") continue;
+              frameCount++;
+              let parsed: any = null;
+              try { parsed = JSON.parse(payload); } catch { continue; }
+              const parts = parsed?.candidates?.[0]?.content?.parts || [];
+              // Exclude internal reasoning parts ("thought": true) — only
+              // user-visible answer text may flow to the client.
+              const delta = parts
+                .map((p: any) =>
+                  p && typeof p.text === "string" && p.thought !== true ? p.text : ""
+                )
+                .join("");
+              if (delta) {
+                sawAnyText = true;
+                try {
+                  out.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ text: delta })}\n\n`));
+                } catch { /* client disconnected */ }
+              }
+            }
+          };
 
           const transform = new TransformStream({
             transform(chunk, out) {
               sseBuffer += decoder.decode(chunk, { stream: true });
+              // Normalize CRLF — some upstreams frame SSE with \r\n\r\n,
+              // which would never match the \n\n delimiter below.
+              sseBuffer = sseBuffer.replace(/\r\n/g, "\n");
               let sep: number;
               while ((sep = sseBuffer.indexOf("\n\n")) !== -1) {
                 const block = sseBuffer.slice(0, sep);
                 sseBuffer = sseBuffer.slice(sep + 2);
-                for (const line of block.split("\n")) {
-                  if (!line.startsWith("data:")) continue;
-                  const payload = line.slice(5).trim();
-                  if (!payload) continue;
-                  let parsed: any = null;
-                  try { parsed = JSON.parse(payload); } catch { continue; }
-                  const parts = parsed?.candidates?.[0]?.content?.parts || [];
-                  const delta = parts.map((p: any) => String(p?.text ?? "")).join("");
-                  if (delta) {
-                    sawAnyText = true;
-                    try {
-                      out.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ text: delta })}\n\n`));
-                    } catch { /* client disconnected */ }
-                  }
-                }
+                processFrame(out, block);
               }
             },
             flush(out) {
+              // Handle a trailing frame that lacked its closing blank line.
+              if (sseBuffer.trim()) processFrame(out, sseBuffer);
               try {
-                out.enqueue(encoder.encode(
-                  `event: complete\ndata: ${JSON.stringify({ success: true, actions, thoughtSteps: [], model: streamModel })}\n\n`
-                ));
+                if (!sawAnyText) {
+                  // Self-describing failure: frame telemetry pinpoints whether
+                  // upstream sent nothing at all vs. unparseable framing.
+                  out.enqueue(encoder.encode(
+                    `event: error\ndata: ${JSON.stringify({ error: `${streamModel} produced no visible text (frames=${frameCount})` })}\n\n`
+                  ));
+                } else {
+                  out.enqueue(encoder.encode(
+                    `event: complete\ndata: ${JSON.stringify({ success: true, actions, thoughtSteps: [], model: streamModel })}\n\n`
+                  ));
+                }
               } catch { /* client disconnected */ }
             }
           });
