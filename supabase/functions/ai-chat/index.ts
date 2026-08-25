@@ -40,6 +40,9 @@ const GEMINI_PRIMARY_MODELS = [
   "gemini-2.0-flash"
 ];
 
+let modelCache: { at: number; names: string[] } | null = null;
+const MODEL_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
 /**
  * Ask Google which models THIS key can actually use right now. Hardcoded
  * model lists rot every time Google retires a generation — discovery makes
@@ -47,6 +50,9 @@ const GEMINI_PRIMARY_MODELS = [
  * caller can fall back to the curated list above.
  */
 async function discoverAvailableModels(apiKey: string): Promise<string[]> {
+  if (modelCache && Date.now() - modelCache.at < MODEL_CACHE_TTL_MS) {
+    return modelCache.names;
+  }
   const endpoints = [
     `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=100`,
     `https://generativelanguage.googleapis.com/v1/models?key=${encodeURIComponent(apiKey)}&pageSize=100`
@@ -63,7 +69,10 @@ async function discoverAvailableModels(apiKey: string): Promise<string[]> {
         .filter((m: any) => !Array.isArray(m.supportedGenerationMethods) || m.supportedGenerationMethods.includes("generateContent"))
         .map((m: any) => String(m.name || "").replace(/^models\//, ""))
         .filter((n: string) => n && !/embedding|aqa|tts|image|veo|imagen|learnlm|gemma/i.test(n));
-      if (names.length > 0) return names;
+      if (names.length > 0) {
+        modelCache = { at: Date.now(), names };
+        return names;
+      }
     } catch {
       clearTimeout(timeoutId);
       // try next endpoint
@@ -77,9 +86,11 @@ const MAX_HISTORY_ITEMS = 20;
 const MAX_MSG_CONTENT_LEN = 8000;
 const MAX_DOC_CONTENT_LEN = 50000;
 const MAX_IMAGE_BASE64_BYTES = 7 * 1024 * 1024;
-// Modern Gemini thinking-class models can legitimately reason for 30-60s
-// before answering — give each model attempt generous headroom.
-const FETCH_TIMEOUT_MS = 40000;
+// Thinking-capable Gemini models can hang far too long on trivial prompts
+// unless their internal reasoning budget is capped (handled per-request in
+// the model loop). 20s per model keeps failure cascades fast while leaving
+// legitimate generations plenty of room.
+const FETCH_TIMEOUT_MS = 20000;
 
 let kvInstance: any = null;
 async function getKV() {
@@ -565,10 +576,14 @@ LIVE DATABASE METRICS (verified from Supabase):
     // back to the curated list when discovery is unavailable.
     let candidateModels = await discoverAvailableModels(apiKey);
     if (candidateModels.length > 0) {
-      candidateModels = [
-        ...candidateModels.filter((m: string) => /flash/i.test(m)),
-        ...candidateModels.filter((m: string) => !/flash/i.test(m))
-      ].slice(0, 6);
+      // Prefer flash (fast/cost) over pro, and STABLE models over
+      // preview/experimental variants (which are flakier and slower).
+      const score = (m: string) =>
+        (/flash/i.test(m) ? 0 : 1) +
+        (/preview|exp|latest/i.test(m) ? 2 : 0);
+      candidateModels = [...candidateModels]
+        .sort((a: string, b: string) => score(a) - score(b))
+        .slice(0, 6);
       console.log("[ai-chat] Discovered models:", candidateModels.join(", "));
     } else {
       candidateModels = [...GEMINI_PRIMARY_MODELS];
@@ -584,7 +599,17 @@ LIVE DATABASE METRICS (verified from Supabase):
           const upstreamRes = await fetch(streamUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(generationPayload),
+            body: JSON.stringify(
+              /gemini-(2\.5|3)/i.test(streamModel)
+                ? {
+                    ...generationPayload,
+                    generationConfig: {
+                      ...generationPayload.generationConfig,
+                      thinkingConfig: { thinkingBudget: 1024 }
+                    }
+                  }
+                : generationPayload
+            ),
             signal: controller.signal
           });
           clearTimeout(timeoutId);
@@ -617,7 +642,22 @@ LIVE DATABASE METRICS (verified from Supabase):
         const response = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(generationPayload),
+          body: JSON.stringify(
+            /gemini-(2\.5|3)/i.test(modelName)
+              ? {
+                  ...generationPayload,
+                  generationConfig: {
+                    ...generationPayload.generationConfig,
+                    // CRITICAL LATENCY FIX: Gemini 2.5+/3.x default to
+                    // extended internal reasoning that can run for minutes —
+                    // even on trivial prompts like "Hi" (observed as constant
+                    // ~43s request times). Capping the thinking budget bounds
+                    // latency while keeping useful analysis quality.
+                    thinkingConfig: { thinkingBudget: 1024 }
+                  }
+                }
+              : generationPayload
+          ),
           signal: controller.signal
         });
 
