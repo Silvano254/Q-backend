@@ -275,6 +275,276 @@ function formatRecordsBlock(r: RecentRecords): string {
   return "LIVE RECORD-LEVEL CONTEXT (verbatim recent records):\n" + lines.join("\n") + "\n";
 }
 
+// ============================================================================
+// AGENTIC TOOL LAYER — intent-matched system capabilities.
+// Adding a future capability = appending ONE entry to TOOLS below. Each tool
+// runs a targeted, read-only query and returns authoritative answer lines.
+// ============================================================================
+interface Tool {
+  name: string;
+  test: (prompt: string) => boolean;
+  run: (supabase: any, prompt: string) => Promise<string[]>;
+}
+
+/** Extracts document tokens like INV-2026-001 / QT 2026 004 (any separator). */
+function extractDocToken(prompt: string, prefix: string): string | null {
+  const re = new RegExp(`\\b(${prefix})[\\/\\\\\\- ]?(\\d{2,6}(?:[\\/\\\\- ]?\\d{1,6})?)`, "i");
+  const m = prompt.match(re);
+  if (!m) return null;
+  return `${m[1].toUpperCase()}-${m[2].replace(/[\\/\\\\ ]+/g, "-")}`;
+}
+
+function money(n: any): string {
+  return `KES ${Number(n || 0).toLocaleString()}`;
+}
+
+const INVOICE_COLS = "invoice_number,client_name,issue_date,due_date,grand_total,balance_remaining,status";
+
+const TOOLS: Tool[] = [
+  {
+    name: "lookup_invoice_by_number",
+    test: (p) => /\binv\b|\binvoice\b/i.test(p) && !!extractDocToken(p, "INV"),
+    run: async (db, p) => {
+      const tok = extractDocToken(p, "INV")!;
+      const digits = tok.replace(/^INV-?/i, "");
+      const { data, error } = await db
+        .from("invoices")
+        .select(`${INVOICE_COLS},notes`)
+        .ilike("invoice_number", `%${digits}%`)
+        .limit(3);
+      if (error) throw error;
+      if (!data || data.length === 0) return [`No invoice matching "${tok}" was found.`];
+      return [`INVOICE LOOKUP — ${tok}:`].concat(data.map((i: any) =>
+        `- ${i.invoice_number} | ${i.client_name} | issued ${i.issue_date ?? "n/a"} | total ${money(i.grand_total)} | balance ${money(i.balance_remaining)} | ${i.status || "n/a"}${i.due_date ? ` | due ${i.due_date}` : ""}`
+      ));
+    }
+  },
+  {
+    name: "lookup_quote_by_number",
+    test: (p) => /\bquotation\b|\bquote\b|\bqt\b/i.test(p) && !!extractDocToken(p, "QT"),
+    run: async (db, p) => {
+      const tok = extractDocToken(p, "QT")!;
+      const digits = tok.replace(/^QT-?/i, "");
+      const { data, error } = await db
+        .from("quotes")
+        .select("quote_number,client_name,grand_total,status")
+        .ilike("quote_number", `%${digits}%`)
+        .limit(3);
+      if (error) throw error;
+      if (!data || data.length === 0) return [`No quote matching "${tok}" was found.`];
+      return [`QUOTE LOOKUP — ${tok}:`].concat(data.map((q: any) =>
+        `- ${q.quote_number} | ${q.client_name} | ${money(q.grand_total)} | ${q.status || "n/a"}`
+      ));
+    }
+  },
+  {
+    name: "list_invoices",
+    test: (p) => /(list|show|all|my|see|view)[^.?!]*\binvoices\b/i.test(p),
+    run: async (db) => {
+      const { data, error } = await db
+        .from("invoices")
+        .select(INVOICE_COLS)
+        .order("issue_date", { ascending: false })
+        .limit(12);
+      if (error) throw error;
+      if (!data || data.length === 0) return ["No invoices exist yet."];
+      return [`ALL RECENT INVOICES (${data.length}):`].concat(data.map((i: any) =>
+        `- ${i.invoice_number} | ${i.client_name} | ${money(i.grand_total)} | balance ${money(i.balance_remaining)} | ${i.status || "n/a"}${i.issue_date ? ` | ${i.issue_date}` : ""}`
+      ));
+    }
+  },
+  {
+    name: "list_quotes",
+    test: (p) => /(list|show|all|my|see|view)[^.?!]*\b(quotes|quotations)\b/i.test(p),
+    run: async (db) => {
+      const { data, error } = await db
+        .from("quotes")
+        .select("quote_number,client_name,grand_total,status")
+        .order("quote_number", { ascending: false })
+        .limit(12);
+      if (error) throw error;
+      if (!data || data.length === 0) return ["No quotes exist yet."];
+      return [`ALL RECENT QUOTES (${data.length}):`].concat(data.map((q: any) =>
+        `- ${q.quote_number} | ${q.client_name} | ${money(q.grand_total)} | ${q.status || "n/a"}`
+      ));
+    }
+  },
+  {
+    name: "overdue_report",
+    test: (p) => /\boverdue\b|\bunpaid\b|\bwho owes\b|\boutstanding\b/i.test(p),
+    run: async (db) => {
+      const { data, error } = await db
+        .from("invoices")
+        .select(INVOICE_COLS)
+        .neq("status", "paid")
+        .order("due_date", { ascending: true })
+        .limit(50);
+      if (error) throw error;
+      const today = new Date().toISOString().slice(0, 10);
+      const overdue = (data || [])
+        .map((i: any) => ({ ...i, bal: Number(i.balance_remaining || 0) }))
+        .filter((i: any) => i.bal > 0 && (String(i.status || "").toLowerCase() === "overdue" || (!!i.due_date && String(i.due_date).slice(0, 10) < today)));
+      if (overdue.length === 0) {
+        return ["Nothing is overdue right now — every issued invoice is either paid or not yet due."];
+      }
+      const total = Math.round(overdue.reduce((s, i) => s + i.bal, 0) * 100) / 100;
+      return [
+        `OVERDUE REPORT — ${overdue.length} invoice(s), ${money(total)} outstanding:`,
+        ...overdue.map((i: any) =>
+          `- ${i.invoice_number} | ${i.client_name} | ${money(i.bal)} owed${i.due_date ? ` | was due ${i.due_date}` : ""} | ${i.status}`
+        )
+      ];
+    }
+  },
+  {
+    name: "find_clients",
+    test: (p) =>
+      /\b(?:find|search|look ?up|details? (?:of|for)|about|profile (?:of|for))\b[^.?!]*\bclients?\b/i.test(p) ||
+      /\bclients? (?:named|called)\b/i.test(p),
+    run: async (db, p) => {
+      const m = p.match(/\b(?:client|customer)s?\s+(?:named\s+|called\s+)?[\"“']?([A-Za-z][A-Za-z .'-]{1,39})/i);
+      const term = m ? m[1].trim() : "";
+      if (!term) return [];
+      const { data, error } = await db
+        .from("clients")
+        .select("name,company,phone,email,status")
+        .or(`name.ilike.%${term}%,company.ilike.%${term}%`)
+        .limit(5);
+      if (error) throw error;
+      if (!data || data.length === 0) return [`No client matching "${term}" exists yet.`];
+      const lines = [`CLIENT MATCHES for "${term}" (${data.length}):`];
+      for (const c of data) {
+        lines.push(`- ${c.name}${c.company ? ` (${c.company})` : ""}${c.phone ? ` | phone ${c.phone}` : ""}${c.email ? ` | ${c.email}` : ""}`);
+        try {
+          const inv = await db
+            .from("invoices")
+            .select(INVOICE_COLS)
+            .ilike("client_name", `%${c.name}%`)
+            .order("issue_date", { ascending: false })
+            .limit(5);
+          for (const i of inv.data || []) {
+            lines.push(`    • invoice ${i.invoice_number}: ${money(i.grand_total)}, balance ${money(i.balance_remaining)}, ${i.status}`);
+          }
+        } catch { /* profile enrichment optional */ }
+      }
+      return lines;
+    }
+  },
+  {
+    name: "revenue_summary",
+    test: (p) => /\brevenue\b|\bincome\b|\bsales\b|\bearnings\b|\bhow much (?:did|have|were)\b|\bcash collected\b|\bcollection rate\b/i.test(p),
+    run: async (db, p) => {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = now.getMonth();
+      const iso = (d: Date) => d.toISOString().slice(0, 10);
+      let from: string | undefined;
+      let to: string | undefined;
+      let label = "all time";
+      if (/last month/i.test(p)) {
+        from = iso(new Date(y, m - 1, 1));
+        to = iso(new Date(y, m, 0));
+        label = "last month";
+      } else if (/this month/i.test(p)) {
+        from = iso(new Date(y, m, 1));
+        to = iso(new Date(y, m + 1, 0));
+        label = "this month";
+      } else if (/this year/i.test(p)) {
+        from = `${y}-01-01`;
+        to = iso(new Date(y, 11, 31));
+        label = `this year (${y})`;
+      }
+      const inRange = (d: any) => {
+        if (!from || !d) return true;
+        const s = String(d).slice(0, 10);
+        return s >= from && s <= to!;
+      };
+      const [invR, payR] = await Promise.all([
+        db.from("invoices").select("issue_date,grand_total,balance_remaining").limit(1000),
+        db.from("payments").select("amount_paid,payment_date").limit(1000)
+      ]);
+      if (invR.error) throw invR.error;
+      const invoices = (invR.data || []).filter((i: any) => inRange(i.issue_date));
+      const invoiced = invoices.reduce((s: number, i: any) => s + Number(i.grand_total || 0), 0);
+      const outstanding = invoices.reduce((s: number, i: any) => s + Number(i.balance_remaining || 0), 0);
+      const payments = ((payR.data || []) as any[]).filter((x) => inRange(x.payment_date));
+      const collected = payments.reduce((s, x) => s + Number(x.amount_paid || 0), 0);
+      return [
+        `${label.toUpperCase()} FINANCIAL SUMMARY:`,
+        `- Invoiced: ${money(invoiced)} across ${invoices.length} invoice(s)`,
+        `- Collected: ${money(collected)} across ${payments.length} payment(s)`,
+        `- Still outstanding: ${money(outstanding)}`,
+        `- Collection rate: ${invoiced > 0 ? Math.round((collected / invoiced) * 100) : 100}%`
+      ];
+    }
+  },
+  {
+    name: "product_catalog",
+    test: (p) => /\bcatalog(?:ue)?\b|\bprice list\b|\brates?\b/i.test(p),
+    run: async (db) => {
+      const { data, error } = await db.from("products").select("*").limit(30);
+      if (error) throw error;
+      if (!data || data.length === 0) return ["The product catalog is empty."];
+      return [`PRODUCT CATALOG (${data.length} items):`].concat(
+        data.slice(0, 20).map((x: any) => {
+          const price = Number(x.unit_price ?? x.unitPrice ?? x.price ?? 0);
+          const unit = x.unit_type ?? x.unitType ?? "";
+          return `- ${x.name}${x.category ? ` [${x.category}]` : ""} — ${money(price)}${unit ? ` / ${unit}` : ""}`;
+        })
+      );
+    }
+  },
+  {
+    name: "count_entities",
+    test: (p) => /\bhow many\b[^.?!]*\b(clients?|customers?|invoices?|quotes?|quotations?|payments?)\b/i.test(p),
+    run: async (db, p) => {
+      const lines: string[] = [];
+      if (/\bclients?\b|\bcustomers?\b/i.test(p)) {
+        const { count } = await db.from("clients").select("id", { count: "exact", head: true });
+        lines.push(`- Clients: ${count ?? 0}`);
+      }
+      if (/\binvoices?\b/i.test(p)) {
+        const { count } = await db.from("invoices").select("id", { count: "exact", head: true });
+        lines.push(`- Invoices: ${count ?? 0}`);
+      }
+      if (/\b(quotes|quotations)\b/i.test(p)) {
+        const { count } = await db.from("quotes").select("id", { count: "exact", head: true });
+        lines.push(`- Quotes: ${count ?? 0}`);
+      }
+      if (/\bpayments?\b/i.test(p)) {
+        const { count } = await db.from("payments").select("id", { count: "exact", head: true });
+        lines.push(`- Payments recorded: ${count ?? 0}`);
+      }
+      return lines;
+    }
+  }
+];
+
+/**
+ * Runs every tool whose intent matcher fires (capped at 3 per request to bound
+ * latency) and returns flattened authoritative answer lines. Tool failures are
+ * isolated — one broken tool never blocks the rest of the pipeline.
+ */
+async function gatherToolContext(supabase: any, prompt: string): Promise<string[]> {
+  const matched = TOOLS.filter((t) => {
+    try { return t.test(prompt); } catch { return false; }
+  }).slice(0, 3);
+
+  if (matched.length === 0) return [];
+
+  const results = await Promise.all(
+    matched.map(async (t) => {
+      try {
+        return await t.run(supabase, prompt);
+      } catch (err: any) {
+        console.warn(`[ai-chat] tool "${t.name}" failed:`, err?.message || err);
+        return [`(tool "${t.name}" temporarily unavailable)`];
+      }
+    })
+  );
+  return results.flat().filter(Boolean);
+}
+
 async function fetchLiveMetrics(supabase: any): Promise<LiveMetrics> {
   const metrics: LiveMetrics = {
     companyName: "Binti Events",
@@ -670,11 +940,17 @@ serve(async (req) => {
       }
     }
 
-    const [live, recent] = await Promise.all([
+    const [live, recent, toolLines] = await Promise.all([
       fetchLiveMetrics(supabase),
-      fetchRecentRecords(supabase)
+      fetchRecentRecords(supabase),
+      gatherToolContext(supabase, cleanPrompt)
     ]);
-    const recordsBlock = formatRecordsBlock(recent);
+    let recordsBlock = formatRecordsBlock(recent);
+    if (toolLines.length > 0) {
+      recordsBlock = (recordsBlock ? recordsBlock + "\n" : "") +
+        "TOOL RESULTS (authoritative answers for this exact request):\n" +
+        toolLines.join("\n") + "\n";
+    }
     const actions = extractServerActions(cleanPrompt, document);
 
     let finalPrompt = cleanPrompt;
@@ -722,7 +998,7 @@ LIVE DATABASE METRICS (verified from Supabase):
 - Expense Tracking: Not stored in database schema
 
 ${recordsBlock}
-RECORD-LEVEL QUESTIONS: When the user asks about a SPECIFIC, LATEST or RECENT invoice, quote, client or payment, answer using EXACTLY the records in LIVE RECORD-LEVEL CONTEXT above — quote numbers, names, dates and amounts verbatim. If the needed record is not present there, state precisely which identifier you need (e.g. an invoice number) and stop. Do NOT ask users to upload documents, and do NOT claim you lack record access when records are listed above.
+RECORD-LEVEL QUESTIONS: When the user asks about a SPECIFIC, LATEST or RECENT invoice, quote, client or payment — or anything covered by TOOL RESULTS above — answer using EXACTLY the LIVE RECORD-LEVEL CONTEXT and TOOL RESULTS data: quote numbers, names, dates and amounts verbatim. TOOL RESULTS are the authoritative, query-fresh answer for that request and take precedence over the general LATEST lists. If a needed record is not present anywhere, state precisely which identifier you need (e.g. an invoice number) and stop. Do NOT ask users to upload documents, and do NOT claim you lack record access when records are listed above.
 
 RESPONSE COMPLETENESS: Deliver complete tables, lists and sentences. Never cut off mid-item or mid-sentence; if space is tight, summarize compactly instead of truncating.
 
