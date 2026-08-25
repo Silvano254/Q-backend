@@ -53,7 +53,7 @@ async function discoverAvailableModels(apiKey: string): Promise<string[]> {
   ];
   for (const url of endpoints) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
     try {
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timeoutId);
@@ -77,7 +77,9 @@ const MAX_HISTORY_ITEMS = 20;
 const MAX_MSG_CONTENT_LEN = 8000;
 const MAX_DOC_CONTENT_LEN = 50000;
 const MAX_IMAGE_BASE64_BYTES = 7 * 1024 * 1024;
-const FETCH_TIMEOUT_MS = 25000;
+// Modern Gemini thinking-class models can legitimately reason for 30-60s
+// before answering — give each model attempt generous headroom.
+const FETCH_TIMEOUT_MS = 40000;
 
 let kvInstance: any = null;
 async function getKV() {
@@ -665,8 +667,13 @@ LIVE DATABASE METRICS (verified from Supabase):
       } catch (fetchErr: any) {
         clearTimeout(timeoutId);
         console.error(`[ai-chat] Fetch error on ${modelName}:`, fetchErr.message);
-        lastUpstreamStatus = null;
-        lastUpstreamDetail = String(fetchErr?.message || "network error").slice(0, 200);
+        if (fetchErr?.name === "AbortError") {
+          lastUpstreamStatus = null;
+          lastUpstreamDetail = `${modelName} timed out after ${FETCH_TIMEOUT_MS / 1000}s`;
+        } else {
+          lastUpstreamStatus = null;
+          lastUpstreamDetail = String(fetchErr?.message || "network error").slice(0, 200);
+        }
       }
     }
 
