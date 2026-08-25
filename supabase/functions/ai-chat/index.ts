@@ -31,12 +31,46 @@ function getCorsHeaders(req: Request) {
 }
 
 const GEMINI_PRIMARY_MODELS = [
+  "gemini-3.0-flash",
+  "gemini-3-flash",
+  "gemini-3.0-pro",
+  "gemini-3-pro",
   "gemini-2.5-flash",
-  "gemini-2.0-flash",
-  "gemini-1.5-flash",
-  "gemini-1.5-pro",
-  "gemini-2.5-pro"
+  "gemini-2.5-pro",
+  "gemini-2.0-flash"
 ];
+
+/**
+ * Ask Google which models THIS key can actually use right now. Hardcoded
+ * model lists rot every time Google retires a generation — discovery makes
+ * model outages structurally impossible. Returns [] on any failure so the
+ * caller can fall back to the curated list above.
+ */
+async function discoverAvailableModels(apiKey: string): Promise<string[]> {
+  const endpoints = [
+    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=100`,
+    `https://generativelanguage.googleapis.com/v1/models?key=${encodeURIComponent(apiKey)}&pageSize=100`
+  ];
+  for (const url of endpoints) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!res.ok) continue;
+      const data = await res.json();
+      const names = (data?.models || [])
+        .filter((m: any) => !Array.isArray(m.supportedGenerationMethods) || m.supportedGenerationMethods.includes("generateContent"))
+        .map((m: any) => String(m.name || "").replace(/^models\//, ""))
+        .filter((n: string) => n && !/embedding|aqa|tts|image|veo|imagen|learnlm|gemma/i.test(n));
+      if (names.length > 0) return names;
+    } catch {
+      clearTimeout(timeoutId);
+      // try next endpoint
+    }
+  }
+  return [];
+}
 
 const MAX_PROMPT_LEN = 4000;
 const MAX_HISTORY_ITEMS = 20;
@@ -524,8 +558,22 @@ LIVE DATABASE METRICS (verified from Supabase):
       }
     };
 
+    // Resolve the model cascade dynamically: prefer models this key can
+    // actually see right now (flash variants first for speed/cost), falling
+    // back to the curated list when discovery is unavailable.
+    let candidateModels = await discoverAvailableModels(apiKey);
+    if (candidateModels.length > 0) {
+      candidateModels = [
+        ...candidateModels.filter((m: string) => /flash/i.test(m)),
+        ...candidateModels.filter((m: string) => !/flash/i.test(m))
+      ].slice(0, 6);
+      console.log("[ai-chat] Discovered models:", candidateModels.join(", "));
+    } else {
+      candidateModels = [...GEMINI_PRIMARY_MODELS];
+    }
+
     if (isStreamRequested) {
-      for (const streamModel of GEMINI_PRIMARY_MODELS) {
+      for (const streamModel of candidateModels) {
         const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${streamModel}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -558,7 +606,7 @@ LIVE DATABASE METRICS (verified from Supabase):
 
     let lastUpstreamStatus: number | null = null;
     let lastUpstreamDetail = "";
-    for (const modelName of GEMINI_PRIMARY_MODELS) {
+    for (const modelName of candidateModels) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
