@@ -1316,6 +1316,11 @@ Omit unknown optional fields rather than inventing values. The platform converts
           };
 
           const transform = new TransformStream({
+            start(out) {
+              out.enqueue(encoder.encode(
+                `event: step\ndata: ${JSON.stringify({ title: "AI stream connected", detail: `Model ${streamModel} is generating the response.`, status: "in_progress" })}\n\n`
+              ));
+            },
             transform(chunk, out) {
               sseBuffer += decoder.decode(chunk, { stream: true });
               // Normalize CRLF — some upstreams frame SSE with \r\n\r\n,
@@ -1361,6 +1366,9 @@ Omit unknown optional fields rather than inventing values. The platform converts
                     `event: error\ndata: ${JSON.stringify({ error: `${streamModel} produced no visible text (frames=${frameCount})${finishNote}` })}\n\n`
                   ));
                 } else {
+                  out.enqueue(encoder.encode(
+                    `event: step\ndata: ${JSON.stringify({ title: "AI response finalized", detail: `Model ${streamModel} completed the response.`, status: "complete" })}\n\n`
+                  ));
                   const body: any = {
                     success: true,
                     actions: finalActions,
@@ -1466,7 +1474,15 @@ Omit unknown optional fields rather than inventing values. The platform converts
               || (quoteAction ? "I've structured the quotation and staged it below for your approval." : "");
             if (reply) {
               return new Response(
-                JSON.stringify({ success: true, reply, actions: finalActions }),
+                JSON.stringify({
+                  success: true,
+                  reply,
+                  actions: finalActions,
+                  thoughtSteps: [
+                    { title: "Database context loaded", detail: "Live business records were queried for this request.", status: "complete" },
+                    { title: "AI response finalized", detail: `Model ${modelName} completed the response.`, status: "complete" }
+                  ]
+                }),
                 { headers: { ...corsHeaders, "Content-Type": "application/json" } }
               );
             }
