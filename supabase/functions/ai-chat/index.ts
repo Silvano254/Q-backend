@@ -157,6 +157,17 @@ interface RecentRecords {
   recentPayments: Array<Record<string, any>>;
 }
 
+const TENANT_TABLES = new Set(["company_settings", "clients", "products", "quotes", "invoices", "payments"]);
+
+function createTenantDb(db: any, ownerId: string) {
+  return {
+    from(table: string) {
+      const query = db.from(table);
+      return TENANT_TABLES.has(table) ? query.eq("owner_id", ownerId) : query;
+    }
+  };
+}
+
 /**
  * Fetches compact RECORD-LEVEL context (most recent first) so the model can
  * answer specific questions — "details of the last invoice", "who owes me",
@@ -176,14 +187,14 @@ async function fetchRecentRecords(supabase: any): Promise<RecentRecords> {
     try {
       const r = await supabase
         .from("invoices")
-        .select("invoice_number,client_name,issue_date,due_date,grand_total,balance_remaining,status")
-        .order("issue_date", { ascending: false })
+        .select("invoice_number,client_name,created_at,due_date,grand_total,balance_remaining,status")
+        .order("created_at", { ascending: false })
         .limit(20);
       inv = r.data || [];
     } catch {
       const r = await supabase
         .from("invoices")
-        .select("invoice_number,client_name,issue_date,due_date,grand_total,balance_remaining,status")
+        .select("invoice_number,client_name,created_at,due_date,grand_total,balance_remaining,status")
         .limit(20);
       inv = r.data || [];
     }
@@ -215,7 +226,7 @@ async function fetchRecentRecords(supabase: any): Promise<RecentRecords> {
   try {
     const { data } = await supabase
       .from("clients")
-      .select("name,company,phone")
+      .select("name,company_name,phone")
       .limit(8);
     rec.recentClients = data || [];
   } catch (e) {
@@ -225,7 +236,7 @@ async function fetchRecentRecords(supabase: any): Promise<RecentRecords> {
   try {
     const { data } = await supabase
       .from("payments")
-      .select("amount_paid,payment_date,reference_number")
+      .select("amount_paid,payment_date,reference")
       .order("payment_date", { ascending: false })
       .limit(5);
     rec.recentPayments = data || [];
@@ -243,7 +254,7 @@ function formatRecordsBlock(r: RecentRecords): string {
   if (r.latestInvoices.length > 0) {
     lines.push("LATEST INVOICES:");
     for (const i of r.latestInvoices) {
-      lines.push(`- ${i.invoice_number} | ${i.client_name} | issued ${i.issue_date ?? "n/a"} | total ${money(i.grand_total)} | balance ${money(i.balance_remaining)} | ${i.status || "n/a"}${i.due_date ? ` | due ${i.due_date}` : ""}`);
+      lines.push(`- ${i.invoice_number} | ${i.client_name} | issued ${(i.created_at || "").slice(0, 10) || "n/a"} | total ${money(i.grand_total)} | balance ${money(i.balance_remaining)} | ${i.status || "n/a"}${i.due_date ? ` | due ${i.due_date}` : ""}`);
     }
   }
   if (r.overdueInvoices.length > 0) {
@@ -261,13 +272,13 @@ function formatRecordsBlock(r: RecentRecords): string {
   if (r.recentClients.length > 0) {
     lines.push("CLIENTS ON FILE:");
     for (const c of r.recentClients) {
-      lines.push(`- ${c.name}${c.company ? ` (${c.company})` : ""}${c.phone ? ` | phone ${c.phone}` : ""}`);
+      lines.push(`- ${c.name}${c.company_name ? ` (${c.company_name})` : ""}${c.phone ? ` | phone ${c.phone}` : ""}`);
     }
   }
   if (r.recentPayments.length > 0) {
     lines.push("RECENT PAYMENTS:");
     for (const p of r.recentPayments) {
-      lines.push(`- ${money(p.amount_paid)}${p.payment_date ? ` on ${p.payment_date}` : ""}${p.reference_number ? ` | ref ${p.reference_number}` : ""}`);
+      lines.push(`- ${money(p.amount_paid)}${p.payment_date ? ` on ${p.payment_date}` : ""}${p.reference ? ` | ref ${p.reference}` : ""}`);
     }
   }
 
@@ -330,7 +341,7 @@ function parseItems(raw: any): any[] {
   }
 }
 
-const INVOICE_COLS = "invoice_number,client_name,issue_date,due_date,grand_total,balance_remaining,status,items";
+const INVOICE_COLS = "invoice_number,client_name,created_at,due_date,grand_total,balance_remaining,status,items";
 
 const TOOLS: Tool[] = [
   {
@@ -348,7 +359,7 @@ const TOOLS: Tool[] = [
       if (!data || data.length === 0) return [`No invoice matching "${tok}" was found.`];
       const lines = [`INVOICE LOOKUP — ${tok}:`];
       for (const i of data) {
-        lines.push(`- ${i.invoice_number} | ${i.client_name} | issued ${i.issue_date ?? "n/a"} | total ${money(i.grand_total)} | balance ${money(i.balance_remaining)} | ${i.status || "n/a"}${i.due_date ? ` | due ${i.due_date}` : ""}`);
+        lines.push(`- ${i.invoice_number} | ${i.client_name} | issued ${(i.created_at || "").slice(0, 10) || "n/a"} | total ${money(i.grand_total)} | balance ${money(i.balance_remaining)} | ${i.status || "n/a"}${i.due_date ? ` | due ${i.due_date}` : ""}`);
         const rows = parseItems(i.items).slice(0, 12);
         if (rows.length > 0) {
           lines.push(`    Line items (${rows.length}):`);
@@ -410,12 +421,12 @@ const TOOLS: Tool[] = [
       const { data, error } = await db
         .from("invoices")
         .select(INVOICE_COLS)
-        .order("issue_date", { ascending: false })
+        .order("created_at", { ascending: false })
         .limit(12);
       if (error) throw error;
       if (!data || data.length === 0) return ["No invoices exist yet."];
       return [`ALL RECENT INVOICES (${data.length}):`].concat(data.map((i: any) =>
-        `- ${i.invoice_number} | ${i.client_name} | ${money(i.grand_total)} | balance ${money(i.balance_remaining)} | ${i.status || "n/a"}${i.issue_date ? ` | ${i.issue_date}` : ""}`
+        `- ${i.invoice_number} | ${i.client_name} | ${money(i.grand_total)} | balance ${money(i.balance_remaining)} | ${i.status || "n/a"}${i.created_at ? ` | ${String(i.created_at).slice(0, 10)}` : ""}`
       ));
     }
   },
@@ -473,20 +484,20 @@ const TOOLS: Tool[] = [
       if (!term) return [];
       const { data, error } = await db
         .from("clients")
-        .select("name,company,phone,email,status")
+        .select("name,company_name,phone,email,status")
         .or(`name.ilike.%${term}%,company.ilike.%${term}%`)
         .limit(5);
       if (error) throw error;
       if (!data || data.length === 0) return [`No client matching "${term}" exists yet.`];
       const lines = [`CLIENT MATCHES for "${term}" (${data.length}):`];
       for (const c of data) {
-        lines.push(`- ${c.name}${c.company ? ` (${c.company})` : ""}${c.phone ? ` | phone ${c.phone}` : ""}${c.email ? ` | ${c.email}` : ""}`);
+        lines.push(`- ${c.name}${c.company_name ? ` (${c.company_name})` : ""}${c.phone ? ` | phone ${c.phone}` : ""}${c.email ? ` | ${c.email}` : ""}`);
         try {
           const inv = await db
             .from("invoices")
             .select(INVOICE_COLS)
             .ilike("client_name", `%${c.name}%`)
-            .order("issue_date", { ascending: false })
+            .order("created_at", { ascending: false })
             .limit(5);
           for (const i of inv.data || []) {
             lines.push(`    • invoice ${i.invoice_number}: ${money(i.grand_total)}, balance ${money(i.balance_remaining)}, ${i.status}`);
@@ -526,11 +537,11 @@ const TOOLS: Tool[] = [
         return s >= from && s <= to!;
       };
       const [invR, payR] = await Promise.all([
-        db.from("invoices").select("issue_date,grand_total,balance_remaining").limit(1000),
+        db.from("invoices").select("created_at,grand_total,balance_remaining").limit(1000),
         db.from("payments").select("amount_paid,payment_date").limit(1000)
       ]);
       if (invR.error) throw invR.error;
-      const invoices = (invR.data || []).filter((i: any) => inRange(i.issue_date));
+      const invoices = (invR.data || []).filter((i: any) => inRange(i.created_at));
       const invoiced = invoices.reduce((s: number, i: any) => s + Number(i.grand_total || 0), 0);
       const outstanding = invoices.reduce((s: number, i: any) => s + Number(i.balance_remaining || 0), 0);
       const payments = ((payR.data || []) as any[]).filter((x) => inRange(x.payment_date));
@@ -876,7 +887,22 @@ function extractServerActions(prompt: string, document?: any): any[] {
     const tables = document.tables || document.extractedData?.tables;
     if (tables && Array.isArray(tables) && tables.length > 0) {
       const clientTable = tables.find((t: any) => /client|customer|lead/i.test(t.name || "") || (t.headers?.some((h: string) => /name|contact/i.test(h))));
-      if (clientTable) {
+      if (clientTable && Array.isArray(clientTable.rows) && clientTable.rows.length > 0) {
+        const headers = Array.isArray(clientTable.headers) ? clientTable.headers.map((h: string) => h.toLowerCase()) : [];
+        const indexOf = (pattern: RegExp, fallback: number) => {
+          const index = headers.findIndex((h: string) => pattern.test(h));
+          return index >= 0 ? index : fallback;
+        };
+        const nameIndex = indexOf(/name|client|customer|contact/, 0);
+        const companyIndex = indexOf(/company|organization|business/, -1);
+        const phoneIndex = indexOf(/phone|mobile|tel/, -1);
+        const emailIndex = indexOf(/email|mail/, -1);
+        const clients = clientTable.rows.map((row: any[]) => ({
+          name: String(row[nameIndex] ?? '').trim(),
+          company: companyIndex >= 0 ? String(row[companyIndex] ?? '').trim() : '',
+          phone: phoneIndex >= 0 ? String(row[phoneIndex] ?? '').trim() : '',
+          email: emailIndex >= 0 ? String(row[emailIndex] ?? '').trim() : ''
+        })).filter((client: any) => client.name);
         actions.push({
           id: `act-imp-clients-${Date.now()}`,
           type: "import_clients",
@@ -884,7 +910,7 @@ function extractServerActions(prompt: string, document?: any): any[] {
           icon: "database",
           isMutation: true,
           riskLevel: "high",
-          payload: { clientsCount: clientTable.rows?.length || 0 }
+          payload: { clients }
         });
       }
     }
@@ -966,6 +992,7 @@ serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey, {
       auth: { persistSession: false, autoRefreshToken: false }
     });
+    const tenantDb = createTenantDb(supabase, auth.id);
 
     if (typeof prompt !== "string" && !document) {
       return new Response(
@@ -1007,9 +1034,9 @@ serve(async (req) => {
     }
 
     const [live, recent, toolLines] = await Promise.all([
-      fetchLiveMetrics(supabase),
-      fetchRecentRecords(supabase),
-      gatherToolContext(supabase, cleanPrompt)
+      fetchLiveMetrics(tenantDb),
+      fetchRecentRecords(tenantDb),
+      gatherToolContext(tenantDb, cleanPrompt)
     ]);
     let recordsBlock = formatRecordsBlock(recent);
     if (toolLines.length > 0) {

@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { supabase } from '../shared/db.ts'
 import { requireAuth } from '../shared/auth-guard.ts'
+import { scopeQuery } from '../shared/tenant.ts'
 import {
   errorResponse,
   successResponse,
@@ -71,9 +72,9 @@ serve(async (req) => {
     }
 
     if (req.method === 'GET') {
-      return handleListPayments()
+      return handleListPayments(auth)
     } else if (req.method === 'POST') {
-      return handleRecordPayment(req)
+      return handleRecordPayment(req, auth)
     } else {
       return errorResponse('Method not allowed', 405)
     }
@@ -83,11 +84,11 @@ serve(async (req) => {
   }
 })
 
-async function handleListPayments() {
+async function handleListPayments(auth: any) {
   logRequest('payments', 'GET', 'list')
 
-  const { data, error } = await supabase
-    .from('payments')
+  const { data, error } = await scopeQuery(supabase
+    .from('payments'), auth)
     .select('*')
     .order('payment_date', { ascending: false })
 
@@ -99,7 +100,7 @@ async function handleListPayments() {
   return successResponse((data || []).map(mapPayment))
 }
 
-async function handleRecordPayment(req: Request) {
+async function handleRecordPayment(req: Request, auth: any) {
   logRequest('payments', 'POST', 'record')
 
   const body = await parseRequestJSON<any>(req)
@@ -120,8 +121,8 @@ async function handleRecordPayment(req: Request) {
   }
 
   // Fetch the invoice
-  const { data: invoice, error: fetchError } = await supabase
-    .from('invoices')
+  const { data: invoice, error: fetchError } = await scopeQuery(supabase
+    .from('invoices'), auth)
     .select('*')
     .eq('id', invoiceId)
     .single()
@@ -134,8 +135,8 @@ async function handleRecordPayment(req: Request) {
   const grandTotal = Number(invoice.grand_total || 0)
 
   // Guard: payment cannot exceed outstanding balance
-  const { data: existingPays } = await supabase
-    .from('payments')
+  const { data: existingPays } = await scopeQuery(supabase
+    .from('payments'), auth)
     .select('amount_paid')
     .eq('invoice_id', invoiceId)
   const paidSoFar = (existingPays || []).reduce((s: number, p: any) => s + (Number(p.amount_paid) || 0), 0)
@@ -148,6 +149,7 @@ async function handleRecordPayment(req: Request) {
   const { data: createdPayment, error: insertError } = await supabase
     .from('payments')
     .insert({
+      owner_id: auth.id,
       invoice_id: invoiceId,
       invoice_number: invoice.invoice_number || '',
       client_name: invoice.client_name || '',
@@ -183,6 +185,7 @@ async function handleRecordPayment(req: Request) {
       updated_at: new Date().toISOString(),
     })
     .eq('id', invoiceId)
+    .eq('owner_id', auth.id)
     .select()
     .single()
 

@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { supabase } from '../shared/db.ts'
 import { requireAuth } from '../shared/auth-guard.ts'
+import { scopeQuery } from '../shared/tenant.ts'
 import {
   errorResponse,
   successResponse,
@@ -43,13 +44,13 @@ serve(async (req) => {
     }
 
     if (req.method === 'GET') {
-      return handleGetProducts()
+      return handleGetProducts(auth)
     } else if (req.method === 'POST') {
-      return handleCreateProduct(req)
+      return handleCreateProduct(req, auth)
     } else if (req.method === 'PUT') {
-      return handleUpdateProduct(req)
+      return handleUpdateProduct(req, auth)
     } else if (req.method === 'DELETE') {
-      return handleDeleteProduct(req)
+      return handleDeleteProduct(req, auth)
     } else {
       return errorResponse('Method not allowed', 405)
     }
@@ -59,11 +60,11 @@ serve(async (req) => {
   }
 })
 
-async function handleGetProducts() {
+async function handleGetProducts(auth: any) {
   logRequest('products', 'GET', 'list')
 
-  const { data, error } = await supabase
-    .from('products')
+  const { data, error } = await scopeQuery(supabase
+    .from('products'), auth)
     .select('*')
     .order('name', { ascending: true })
 
@@ -75,7 +76,7 @@ async function handleGetProducts() {
   return successResponse((data || []).map(mapProduct))
 }
 
-async function handleCreateProduct(req: Request) {
+async function handleCreateProduct(req: Request, auth: any) {
   logRequest('products', 'POST', 'create')
 
   const body = await parseRequestJSON<any>(req)
@@ -93,6 +94,7 @@ async function handleCreateProduct(req: Request) {
   // No explicit id — let gen_random_uuid() generate the UUID primary key.
   // Map frontend contract (unitType/unitPrice) → canonical columns (unit/price).
   const productData = {
+    owner_id: auth.id,
     name,
     description: sanitizeString(String(body.description ?? body.Description ?? '')).slice(0, 1000),
     category: category || 'General',
@@ -115,7 +117,7 @@ async function handleCreateProduct(req: Request) {
   return successResponse(mapProduct(data), 'Product created successfully')
 }
 
-async function handleUpdateProduct(req: Request) {
+async function handleUpdateProduct(req: Request, auth: any) {
   logRequest('products', 'PUT', 'update')
 
   const url = new URL(req.url)
@@ -140,8 +142,8 @@ async function handleUpdateProduct(req: Request) {
   if (body?.status) updateData.status = body.status === 'inactive' ? 'inactive' : 'active'
   updateData.updated_at = new Date().toISOString()
 
-  const { data, error } = await supabase
-    .from('products')
+  const { data, error } = await scopeQuery(supabase
+    .from('products'), auth)
     .update(updateData)
     .eq('id', productId)
     .select()
@@ -155,7 +157,7 @@ async function handleUpdateProduct(req: Request) {
   return successResponse(mapProduct(data), 'Product updated successfully')
 }
 
-async function handleDeleteProduct(req: Request) {
+async function handleDeleteProduct(req: Request, auth: any) {
   logRequest('products', 'DELETE', 'delete')
 
   const url = new URL(req.url)
@@ -167,10 +169,10 @@ async function handleDeleteProduct(req: Request) {
     return errorResponse('Product ID is required', 400)
   }
 
-  const { error } = await supabase
+  const { error } = await scopeQuery(supabase
     .from('products')
     .delete()
-    .eq('id', productId)
+    .eq('id', productId), auth)
 
   if (error) {
     logError('products-delete', error)

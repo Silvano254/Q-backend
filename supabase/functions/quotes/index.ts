@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { supabase } from '../shared/db.ts'
 import { requireAuth } from '../shared/auth-guard.ts'
+import { scopeQuery } from '../shared/tenant.ts'
 import {
   errorResponse,
   successResponse,
@@ -52,13 +53,13 @@ serve(async (req) => {
     }
 
     if (req.method === 'GET') {
-      return handleGetQuotes()
+      return handleGetQuotes(auth)
     } else if (req.method === 'POST') {
-      return handleCreateQuote(req)
+      return handleCreateQuote(req, auth)
     } else if (req.method === 'PUT') {
-      return handleUpdateQuote(req)
+      return handleUpdateQuote(req, auth)
     } else if (req.method === 'DELETE') {
-      return handleDeleteQuote(req)
+      return handleDeleteQuote(req, auth)
     } else {
       return errorResponse('Method not allowed', 405)
     }
@@ -68,11 +69,11 @@ serve(async (req) => {
   }
 })
 
-async function handleGetQuotes() {
+async function handleGetQuotes(auth: any) {
   logRequest('quotes', 'GET', 'list')
 
-  const { data, error } = await supabase
-    .from('quotes')
+  const { data, error } = await scopeQuery(supabase
+    .from('quotes'), auth)
     .select('*')
     .order('quote_date', { ascending: false })
 
@@ -84,7 +85,7 @@ async function handleGetQuotes() {
   return successResponse((data || []).map(mapQuote))
 }
 
-async function handleCreateQuote(req: Request) {
+async function handleCreateQuote(req: Request, auth: any) {
   logRequest('quotes', 'POST', 'create')
 
   const body = await parseRequestJSON<any>(req)
@@ -102,8 +103,17 @@ async function handleCreateQuote(req: Request) {
   // ('client_gen', legacy text ids) must not violate the foreign key.
   const clientId = UUID_RE.test(rawClientId) ? rawClientId : null
 
+  if (clientId) {
+    const { data: client, error: clientError } = await scopeQuery(
+      supabase.from('clients').select('id').eq('id', clientId),
+      auth,
+    ).maybeSingle()
+    if (clientError || !client) return errorResponse('Client was not found in your account', 400)
+  }
+
   // No explicit id — let gen_random_uuid() generate the UUID primary key.
   const quoteData: Record<string, any> = {
+    owner_id: auth.id,
     quote_number: sanitizeString(String(body.quoteNumber ?? '')).slice(0, 50) || `QT-${Date.now()}`,
     client_id: clientId,
     client_name: clientName,
@@ -131,7 +141,7 @@ async function handleCreateQuote(req: Request) {
   return successResponse(mapQuote(data), 'Quote created successfully')
 }
 
-async function handleUpdateQuote(req: Request) {
+async function handleUpdateQuote(req: Request, auth: any) {
   logRequest('quotes', 'PUT', 'update')
 
   const url = new URL(req.url)
@@ -152,8 +162,8 @@ async function handleUpdateQuote(req: Request) {
   if (body?.notes !== undefined) updateData.notes = sanitizeString(String(body.notes)).slice(0, 2000)
   updateData.updated_at = new Date().toISOString()
 
-  const { data, error } = await supabase
-    .from('quotes')
+  const { data, error } = await scopeQuery(supabase
+    .from('quotes'), auth)
     .update(updateData)
     .eq('id', quoteId)
     .select()
@@ -167,7 +177,7 @@ async function handleUpdateQuote(req: Request) {
   return successResponse(mapQuote(data), 'Quote updated successfully')
 }
 
-async function handleDeleteQuote(req: Request) {
+async function handleDeleteQuote(req: Request, auth: any) {
   logRequest('quotes', 'DELETE', 'delete')
 
   const url = new URL(req.url)
@@ -179,10 +189,10 @@ async function handleDeleteQuote(req: Request) {
     return errorResponse('Quote ID is required', 400)
   }
 
-  const { error } = await supabase
+  const { error } = await scopeQuery(supabase
     .from('quotes')
     .delete()
-    .eq('id', quoteId)
+    .eq('id', quoteId), auth)
 
   if (error) {
     logError('quotes-delete', error)

@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { supabase } from '../shared/db.ts'
 import { requireAuth } from '../shared/auth-guard.ts'
+import { scopeQuery } from '../shared/tenant.ts'
 import {
   errorResponse,
   successResponse,
@@ -69,9 +70,9 @@ serve(async (req) => {
     }
 
     if (req.method === 'GET') {
-      return handleGetSettings()
+      return handleGetSettings(auth)
     } else if (req.method === 'POST' || req.method === 'PUT') {
-      return handleUpdateSettings(req)
+      return handleUpdateSettings(req, auth)
     } else {
       return errorResponse('Method not allowed', 405)
     }
@@ -81,11 +82,11 @@ serve(async (req) => {
   }
 })
 
-async function handleGetSettings() {
+async function handleGetSettings(auth: any) {
   logRequest('settings', 'GET', 'fetch')
 
-  const { data, error } = await supabase
-    .from('company_settings')
+  const { data, error } = await scopeQuery(supabase
+    .from('company_settings'), auth)
     .select('*')
     .limit(1)
     .maybeSingle()
@@ -98,7 +99,7 @@ async function handleGetSettings() {
   return successResponse(mapSettings(data))
 }
 
-async function handleUpdateSettings(req: Request) {
+async function handleUpdateSettings(req: Request, auth: any) {
   logRequest('settings', 'PUT', 'update')
 
   const body = await parseRequestJSON<any>(req)
@@ -120,16 +121,16 @@ async function handleUpdateSettings(req: Request) {
   }
 
   // Single-row semantics: update first row, or insert one if none exists
-  const { data: existing } = await supabase
-    .from('company_settings')
+  const { data: existing } = await scopeQuery(supabase
+    .from('company_settings'), auth)
     .select('id')
     .limit(1)
     .maybeSingle()
 
   let result
   if (existing?.id) {
-    result = await supabase
-      .from('company_settings')
+    result = await scopeQuery(supabase
+      .from('company_settings'), auth)
       .update({ ...updateData, updated_at: new Date().toISOString() })
       .eq('id', existing.id)
       .select()
@@ -137,7 +138,7 @@ async function handleUpdateSettings(req: Request) {
   } else {
     result = await supabase
       .from('company_settings')
-      .insert([updateData])
+      .insert([{ ...updateData, owner_id: auth.id }])
       .select()
       .single()
   }

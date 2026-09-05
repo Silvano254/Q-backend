@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { supabase } from '../shared/db.ts'
 import { requireAuth } from '../shared/auth-guard.ts'
+import { scopeQuery } from '../shared/tenant.ts'
 import {
   errorResponse,
   successResponse,
@@ -46,13 +47,13 @@ serve(async (req) => {
     }
 
     if (req.method === 'GET') {
-      return handleGetClients()
+      return handleGetClients(auth)
     } else if (req.method === 'POST') {
-      return handleCreateClient(req)
+      return handleCreateClient(req, auth)
     } else if (req.method === 'PUT') {
-      return handleUpdateClient(req)
+      return handleUpdateClient(req, auth)
     } else if (req.method === 'DELETE') {
-      return handleDeleteClient(req)
+      return handleDeleteClient(req, auth)
     } else {
       return errorResponse('Method not allowed', 405)
     }
@@ -62,11 +63,11 @@ serve(async (req) => {
   }
 })
 
-async function handleGetClients() {
+async function handleGetClients(auth: any) {
   logRequest('clients', 'GET', 'list')
 
-  const { data, error } = await supabase
-    .from('clients')
+  const { data, error } = await scopeQuery(supabase
+    .from('clients'), auth)
     .select('*')
     .order('updated_at', { ascending: false })
 
@@ -78,7 +79,7 @@ async function handleGetClients() {
   return successResponse((data || []).map(mapClient))
 }
 
-async function handleCreateClient(req: Request) {
+async function handleCreateClient(req: Request, auth: any) {
   logRequest('clients', 'POST', 'create')
 
   const body = await parseRequestJSON<any>(req)
@@ -98,6 +99,7 @@ async function handleCreateClient(req: Request) {
 
   // No explicit id — let gen_random_uuid() generate the UUID primary key.
   const clientData = {
+    owner_id: auth.id,
     name,
     email: email || null,
     phone: sanitizeString(String(body.phone ?? body.Phone ?? '')).slice(0, 50),
@@ -123,7 +125,7 @@ async function handleCreateClient(req: Request) {
   return successResponse(mapClient(data), 'Client created successfully')
 }
 
-async function handleUpdateClient(req: Request) {
+async function handleUpdateClient(req: Request, auth: any) {
   logRequest('clients', 'PUT', 'update')
 
   const url = new URL(req.url)
@@ -152,8 +154,8 @@ async function handleUpdateClient(req: Request) {
   if (body?.status) updateData.status = body.status === 'inactive' ? 'inactive' : 'active'
   updateData.updated_at = new Date().toISOString()
 
-  const { data, error } = await supabase
-    .from('clients')
+  const { data, error } = await scopeQuery(supabase
+    .from('clients'), auth)
     .update(updateData)
     .eq('id', clientId)
     .select()
@@ -167,7 +169,7 @@ async function handleUpdateClient(req: Request) {
   return successResponse(mapClient(data), 'Client updated successfully')
 }
 
-async function handleDeleteClient(req: Request) {
+async function handleDeleteClient(req: Request, auth: any) {
   logRequest('clients', 'DELETE', 'delete')
 
   const url = new URL(req.url)
@@ -179,7 +181,7 @@ async function handleDeleteClient(req: Request) {
     return errorResponse('Client ID is required', 400)
   }
 
-  const { error } = await supabase.from('clients').delete().eq('id', clientId)
+  const { error } = await scopeQuery(supabase.from('clients').delete().eq('id', clientId), auth)
 
   if (error) {
     logError('clients-delete', error)

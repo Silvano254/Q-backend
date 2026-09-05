@@ -38,6 +38,7 @@ REVOKE ALL ON public.auth_users FROM anon, authenticated;
 -- ============================================================
 CREATE TABLE IF NOT EXISTS public.company_settings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id TEXT,
     company_name TEXT NOT NULL DEFAULT 'Binti Events',
     tax_number TEXT,
     address TEXT,
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS public.company_settings (
 
 CREATE TABLE IF NOT EXISTS public.clients (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id TEXT,
     name TEXT NOT NULL,
     email TEXT,
     phone TEXT,
@@ -63,6 +65,7 @@ CREATE TABLE IF NOT EXISTS public.clients (
 
 CREATE TABLE IF NOT EXISTS public.products (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id TEXT,
     name TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'Decor & Event Hire',
     description TEXT,
@@ -75,6 +78,7 @@ CREATE TABLE IF NOT EXISTS public.products (
 
 CREATE TABLE IF NOT EXISTS public.quotes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id TEXT,
     quote_number TEXT,
     client_id UUID,
     client_name TEXT NOT NULL,
@@ -90,6 +94,7 @@ CREATE TABLE IF NOT EXISTS public.quotes (
 
 CREATE TABLE IF NOT EXISTS public.invoices (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id TEXT,
     invoice_number TEXT,
     client_id UUID,
     client_name TEXT NOT NULL,
@@ -102,6 +107,20 @@ CREATE TABLE IF NOT EXISTS public.invoices (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+  CREATE TABLE IF NOT EXISTS public.expenses (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id TEXT,
+    date DATE NOT NULL DEFAULT CURRENT_DATE,
+    category TEXT NOT NULL DEFAULT 'Other',
+    description TEXT NOT NULL,
+    amount NUMERIC(15, 2) NOT NULL CHECK (amount > 0),
+    event_name TEXT,
+    reference_number TEXT,
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
 
 -- ============================================================
 -- 5b. Legacy column harmonization (camelCase -> snake_case)
@@ -186,7 +205,7 @@ BEGIN
   -- Audit timestamps on every business + auth table
   FOREACH t IN ARRAY ARRAY[
     'auth_users','company_settings','clients','products',
-    'quotes','invoices','payments'
+    'quotes','invoices','payments','expenses'
   ]
   LOOP
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=t) THEN
@@ -248,6 +267,7 @@ BEGIN
     IF lower(inv_id_type) IN ('character varying','text','character') THEN
       CREATE TABLE public.payments (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        owner_id TEXT,
         invoice_id TEXT REFERENCES public.invoices(id) ON DELETE CASCADE,
         invoice_number TEXT NOT NULL,
         client_name TEXT NOT NULL,
@@ -261,6 +281,7 @@ BEGIN
     ELSE
       CREATE TABLE public.payments (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        owner_id TEXT,
         invoice_id UUID REFERENCES public.invoices(id) ON DELETE CASCADE,
         invoice_number TEXT NOT NULL,
         client_name TEXT NOT NULL,
@@ -275,6 +296,24 @@ BEGIN
   ELSE
     RAISE NOTICE 'payments table already exists — left untouched.';
   END IF;
+END $$;
+
+-- ============================================================
+DO $$
+DECLARE
+  fallback_owner TEXT;
+  t TEXT;
+BEGIN
+  SELECT id INTO fallback_owner FROM public.auth_users ORDER BY created_at NULLS FIRST, id LIMIT 1;
+  FOREACH t IN ARRAY ARRAY['company_settings','clients','products','quotes','invoices','payments','expenses'] LOOP
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=t) THEN
+      EXECUTE format('ALTER TABLE public.%I ADD COLUMN IF NOT EXISTS owner_id TEXT', t);
+      IF fallback_owner IS NOT NULL THEN
+        EXECUTE format('UPDATE public.%I SET owner_id = $1 WHERE owner_id IS NULL', t) USING fallback_owner;
+      END IF;
+      EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON public.%I(owner_id)', t || '_owner_id_idx', t);
+    END IF;
+  END LOOP;
 END $$;
 
 -- ============================================================
@@ -357,6 +396,7 @@ ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.quotes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expenses ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Allow anon select company_settings" ON public.company_settings;
 DROP POLICY IF EXISTS "Allow anon all company_settings" ON public.company_settings;

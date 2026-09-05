@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { supabase } from '../shared/db.ts'
 import { requireAuth } from '../shared/auth-guard.ts'
+import { scopeQuery } from '../shared/tenant.ts'
 import {
   errorResponse,
   successResponse,
@@ -56,13 +57,13 @@ serve(async (req) => {
     }
 
     if (req.method === 'GET') {
-      return handleGetInvoices()
+      return handleGetInvoices(auth)
     } else if (req.method === 'POST') {
-      return handleCreateInvoice(req)
+      return handleCreateInvoice(req, auth)
     } else if (req.method === 'PUT') {
-      return handleUpdateInvoice(req)
+      return handleUpdateInvoice(req, auth)
     } else if (req.method === 'DELETE') {
-      return handleDeleteInvoice(req)
+      return handleDeleteInvoice(req, auth)
     } else {
       return errorResponse('Method not allowed', 405)
     }
@@ -72,11 +73,11 @@ serve(async (req) => {
   }
 })
 
-async function handleGetInvoices() {
+async function handleGetInvoices(auth: any) {
   logRequest('invoices', 'GET', 'list')
 
-  const { data, error } = await supabase
-    .from('invoices')
+  const { data, error } = await scopeQuery(supabase
+    .from('invoices'), auth)
     .select('*')
     .order('created_at', { ascending: false })
 
@@ -88,7 +89,7 @@ async function handleGetInvoices() {
   return successResponse((data || []).map(mapInvoice))
 }
 
-async function handleCreateInvoice(req: Request) {
+async function handleCreateInvoice(req: Request, auth: any) {
   logRequest('invoices', 'POST', 'create')
 
   const body = await parseRequestJSON<any>(req)
@@ -105,6 +106,14 @@ async function handleCreateInvoice(req: Request) {
   // Only persist client_id when it is a real UUID FK; placeholder ids
   // ('client_gen', legacy text ids) must not violate the foreign key.
   const clientId = UUID_RE.test(rawClientId) ? rawClientId : null
+
+  if (clientId) {
+    const { data: client, error: clientError } = await scopeQuery(
+      supabase.from('clients').select('id').eq('id', clientId),
+      auth,
+    ).maybeSingle()
+    if (clientError || !client) return errorResponse('Client was not found in your account', 400)
+  }
 
   const grandTotal = Number(body.grandTotal ?? body.grand_total ?? 0) || 0
   const incomingPayments = Array.isArray(body.payments) ? body.payments : []
@@ -124,6 +133,7 @@ async function handleCreateInvoice(req: Request) {
 
   // No explicit id — let gen_random_uuid() generate the UUID primary key.
   const invoiceData: Record<string, any> = {
+    owner_id: auth.id,
     invoice_number: sanitizeString(String(body.invoiceNumber ?? '')).slice(0, 50) || `INV-${Date.now()}`,
     client_id: clientId,
     client_name: clientName,
@@ -151,6 +161,7 @@ async function handleCreateInvoice(req: Request) {
     const paymentRows = incomingPayments
       .filter((p: any) => Number(p?.amountPaid) > 0)
       .map((p: any) => ({
+        owner_id: auth.id,
         invoice_id: data.id,
         invoice_number: data.invoice_number,
         client_name: data.client_name,
@@ -168,7 +179,7 @@ async function handleCreateInvoice(req: Request) {
   return successResponse(mapInvoice(data), 'Invoice created successfully')
 }
 
-async function handleUpdateInvoice(req: Request) {
+async function handleUpdateInvoice(req: Request, auth: any) {
   logRequest('invoices', 'PUT', 'update')
 
   const url = new URL(req.url)
@@ -190,15 +201,15 @@ async function handleUpdateInvoice(req: Request) {
   updateData.updated_at = new Date().toISOString()
 
   // Recompute balance from the authoritative payments table
-  const { data: pays } = await supabase
-    .from('payments')
+  const { data: pays } = await scopeQuery(supabase
+    .from('payments'), auth)
     .select('amount_paid')
     .eq('invoice_id', invoiceId)
   const paidSum = (pays || []).reduce((s: number, p: any) => s + (Number(p.amount_paid) || 0), 0)
 
   if (updateData.grand_total === undefined) {
-    const { data: existing } = await supabase
-      .from('invoices')
+    const { data: existing } = await scopeQuery(supabase
+      .from('invoices'), auth)
       .select('grand_total')
       .eq('id', invoiceId)
       .single()
@@ -214,8 +225,8 @@ async function handleUpdateInvoice(req: Request) {
     }
   }
 
-  const { data, error } = await supabase
-    .from('invoices')
+  const { data, error } = await scopeQuery(supabase
+    .from('invoices'), auth)
     .update(updateData)
     .eq('id', invoiceId)
     .select()
@@ -229,7 +240,7 @@ async function handleUpdateInvoice(req: Request) {
   return successResponse(mapInvoice(data), 'Invoice updated successfully')
 }
 
-async function handleDeleteInvoice(req: Request) {
+async function handleDeleteInvoice(req: Request, auth: any) {
   logRequest('invoices', 'DELETE', 'delete')
 
   const url = new URL(req.url)
@@ -242,10 +253,10 @@ async function handleDeleteInvoice(req: Request) {
   }
 
   // payments rows cascade via FK ON DELETE CASCADE
-  const { error } = await supabase
+  const { error } = await scopeQuery(supabase
     .from('invoices')
     .delete()
-    .eq('id', invoiceId)
+    .eq('id', invoiceId), auth)
 
   if (error) {
     logError('invoices-delete', error)

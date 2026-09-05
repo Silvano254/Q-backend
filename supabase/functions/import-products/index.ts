@@ -91,7 +91,7 @@ serve(async (req) => {
       }
 
       rows.push({
-        id: `p_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 8)}`,
+        owner_id: auth.id,
         name,
         description: sanitizeString(String(p?.description ?? '')).slice(0, 1000),
         category: sanitizeString(String(p?.category ?? 'General')).slice(0, 100) || 'General',
