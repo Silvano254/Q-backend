@@ -853,7 +853,7 @@ function extractServerActions(prompt: string, document?: any): any[] {
   const hasNegativeIntent = /\b(don'?t|do not|never|no need to|without|just|only)\s+(import|save|store|record|add|create|write|insert|commit|modifying|changing)\b|\b(read[\s-]only|just analyze|only analyze|don'?t save|do not save|without saving|without importing|no action)\b/i.test(prompt);
 
   // Positive write intent check
-  const hasPositiveWriteIntent = /\b(import|save|store|record|commit|insert|add to db|create expense|create invoice|create quote|structure into db|restructure)\b/i.test(prompt);
+  const hasPositiveWriteIntent = /\b(import|save|store|record|commit|insert|write|add to db|create expense|create invoice|create quote|structure into db|restructure)\b/i.test(prompt);
   const hasWriteIntent = hasPositiveWriteIntent && !hasNegativeIntent;
   const isActionPrompt = /filter overdue|check overdue|open quote|view client/i.test(prompt);
 
