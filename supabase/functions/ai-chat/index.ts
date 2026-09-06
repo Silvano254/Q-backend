@@ -913,6 +913,43 @@ function extractServerActions(prompt: string, document?: any): any[] {
           payload: { clients }
         });
       }
+
+      const productTable = tables.find((t: any) =>
+        /product|service|catalog|item|inventory|equipment/i.test(t.name || "") ||
+        (t.headers?.some((h: string) => /service|item|product|price|unit/i.test(h)))
+      );
+      if (productTable && Array.isArray(productTable.rows) && productTable.rows.length > 0) {
+        const headers = Array.isArray(productTable.headers) ? productTable.headers.map((h: string) => h.toLowerCase()) : [];
+        const findIndex = (pattern: RegExp, fallback: number) => {
+          const index = headers.findIndex((header: string) => pattern.test(header));
+          return index >= 0 ? index : fallback;
+        };
+        const nameIndex = findIndex(/name|service|item|product/, 0);
+        const descriptionIndex = findIndex(/description|details/, -1);
+        const categoryIndex = findIndex(/category|type/, -1);
+        const priceIndex = findIndex(/price|rate|cost|amount/, productTable.headers.length - 1);
+        const unitIndex = findIndex(/unit|per/, -1);
+        const products = productTable.rows.map((row: any[]) => ({
+          name: String(row[nameIndex] ?? '').trim(),
+          description: descriptionIndex >= 0 ? String(row[descriptionIndex] ?? '').trim() : '',
+          category: categoryIndex >= 0 ? String(row[categoryIndex] ?? '').trim() : 'General',
+          unitType: unitIndex >= 0 ? String(row[unitIndex] ?? '').trim() : 'Day',
+          unitPrice: Number(String(row[priceIndex] ?? '').replace(/[^0-9.\-]/g, '')) || 0,
+          taxRate: 16
+        })).filter((product: any) => product.name && product.unitPrice > 0);
+        if (products.length > 0) {
+          actions.push({
+            id: `act-imp-products-${Date.now()}`,
+            type: "import_products",
+            label: `Import ${products.length} Services into Product Catalog`,
+            icon: "database",
+            isMutation: true,
+            riskLevel: "medium",
+            summary: `Add ${products.length} validated service records from the uploaded document to the product catalog.`,
+            payload: { products }
+          });
+        }
+      }
     }
   }
 
@@ -1101,7 +1138,7 @@ LIVE DATABASE METRICS (verified from Supabase):
 - Quote Conversion Rate: ${live.conversionRate}%
 - Overdue Invoices: ${live.overdueInvoiceCount} (${live.currency} ${live.overdueBalance.toLocaleString()})
 - Product Catalog: ${live.productCount} items
-- Expense Tracking: Not stored in database schema
+- Expense Tracking: Stored in the expenses ledger when records are approved and imported
 
 ${recordsBlock}
 RECORD-LEVEL QUESTIONS: When the user asks about a SPECIFIC, LATEST or RECENT invoice, quote, client or payment — or anything covered by TOOL RESULTS above — answer using EXACTLY the LIVE RECORD-LEVEL CONTEXT and TOOL RESULTS data: quote numbers, names, dates and amounts verbatim. TOOL RESULTS are the authoritative, query-fresh answer for that request and take precedence over the general LATEST lists. If a needed record is not present anywhere, state precisely which identifier you need (e.g. an invoice number) and stop. Do NOT ask users to upload documents, and do NOT claim you lack record access when records are listed above.
