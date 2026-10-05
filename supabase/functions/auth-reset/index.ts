@@ -78,12 +78,12 @@ async function handleRequestReset(body: AuthPayload) {
   const otp = generateOTP()
   const otpExpiry = Date.now() + 15 * 60 * 1000 // 15 minutes
 
-  // Store OTP in database
+  // Store OTP in database (canonical snake_case columns per schema.sql)
   const { error: updateError } = await supabase
     .from('auth_users')
     .update({
-      resetOtp: otp,
-      resetOtpExpiry: otpExpiry,
+      reset_otp: otp,
+      reset_otp_expiry: otpExpiry,
     })
     .eq('id', user.id)
 
@@ -129,26 +129,28 @@ async function handleVerifyReset(body: AuthPayload) {
     return errorResponse('User not found', 404)
   }
 
-  // Verify OTP
-  if (!user.resetOtp || user.resetOtp !== otp) {
+  // Verify OTP (tolerate both canonical snake_case and legacy camelCase rows)
+  const storedOtp = (user as any).reset_otp ?? (user as any).resetOtp
+  const storedExpiry = (user as any).reset_otp_expiry ?? (user as any).resetOtpExpiry
+  if (!storedOtp || storedOtp !== otp) {
     return errorResponse('Invalid OTP', 400)
   }
 
-  if (user.resetOtpExpiry && Date.now() > user.resetOtpExpiry) {
+  if (storedExpiry && Date.now() > storedExpiry) {
     return errorResponse('OTP has expired', 400)
   }
 
   // Hash new password
   const { hash, salt } = await hashPassword(newPassword)
 
-  // Update password and clear OTP
+  // Update password and clear OTP (canonical snake_case columns)
   const { error: updateError } = await supabase
     .from('auth_users')
     .update({
-      passwordHash: hash,
-      passwordSalt: salt,
-      resetOtp: null,
-      resetOtpExpiry: null,
+      password_hash: hash,
+      password_salt: salt,
+      reset_otp: null,
+      reset_otp_expiry: null,
     })
     .eq('id', user.id)
 
