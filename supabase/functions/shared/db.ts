@@ -5,15 +5,12 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.112.3'
 // a different project.
 const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
 
-const supabaseServiceRoleKey =
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ||
-  Deno.env.get('SUPABASE_ANON_KEY') ||
-  ''
+const supabaseServiceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
 
 if (!supabaseUrl || !supabaseServiceRoleKey) {
-  console.error(
-    '[db] CRITICAL: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not configured. ' +
-    'All database operations will fail until these secrets are set.'
+  throw new Error(
+    '[db] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY. ' +
+    'Database functions require the server-side service-role key; anon-key fallback is disabled.'
   )
 }
 

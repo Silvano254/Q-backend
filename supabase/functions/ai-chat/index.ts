@@ -978,11 +978,11 @@ serve(async (req) => {
     const isStreamRequested = stream === true || req.headers.get("Accept")?.includes("text/event-stream");
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || Deno.env.get("SUPABASE_ANON_KEY") || "";
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
     const apiKey = (Deno.env.get("GEMINI_API_KEY") || "").trim();
 
     if (!supabaseUrl || !supabaseServiceKey) {
-      console.error("[ai-chat] Missing Supabase credentials");
+      console.error("[ai-chat] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY; anon-key fallback is disabled.");
       return new Response(
         JSON.stringify({ success: false, error: "Service configuration error." }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 500 }
