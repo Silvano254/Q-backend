@@ -77,8 +77,8 @@ async function handleGetInvoices(auth: any) {
   logRequest('invoices', 'GET', 'list')
 
   const { data, error } = await scopeQuery(supabase
-    .from('invoices'), auth)
-    .select('*')
+    .from('invoices')
+    .select('*'), auth)
     .order('created_at', { ascending: false })
 
   if (error) {
@@ -202,15 +202,15 @@ async function handleUpdateInvoice(req: Request, auth: any) {
 
   // Recompute balance from the authoritative payments table
   const { data: pays } = await scopeQuery(supabase
-    .from('payments'), auth)
-    .select('amount_paid')
+    .from('payments')
+    .select('amount_paid'), auth)
     .eq('invoice_id', invoiceId)
   const paidSum = (pays || []).reduce((s: number, p: any) => s + (Number(p.amount_paid) || 0), 0)
 
   if (updateData.grand_total === undefined) {
     const { data: existing } = await scopeQuery(supabase
-      .from('invoices'), auth)
-      .select('grand_total')
+      .from('invoices')
+      .select('grand_total'), auth)
       .eq('id', invoiceId)
       .single()
     updateData.grand_total = Number(existing?.grand_total || 0)
@@ -226,8 +226,8 @@ async function handleUpdateInvoice(req: Request, auth: any) {
   }
 
   const { data, error } = await scopeQuery(supabase
-    .from('invoices'), auth)
-    .update(updateData)
+    .from('invoices')
+    .update(updateData), auth)
     .eq('id', invoiceId)
     .select()
     .single()

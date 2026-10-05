@@ -73,8 +73,8 @@ async function handleGetQuotes(auth: any) {
   logRequest('quotes', 'GET', 'list')
 
   const { data, error } = await scopeQuery(supabase
-    .from('quotes'), auth)
-    .select('*')
+    .from('quotes')
+    .select('*'), auth)
     .order('quote_date', { ascending: false })
 
   if (error) {
@@ -163,8 +163,8 @@ async function handleUpdateQuote(req: Request, auth: any) {
   updateData.updated_at = new Date().toISOString()
 
   const { data, error } = await scopeQuery(supabase
-    .from('quotes'), auth)
-    .update(updateData)
+    .from('quotes')
+    .update(updateData), auth)
     .eq('id', quoteId)
     .select()
     .single()

@@ -67,8 +67,8 @@ async function handleGetClients(auth: any) {
   logRequest('clients', 'GET', 'list')
 
   const { data, error } = await scopeQuery(supabase
-    .from('clients'), auth)
-    .select('*')
+    .from('clients')
+    .select('*'), auth)
     .order('updated_at', { ascending: false })
 
   if (error) {
@@ -155,8 +155,8 @@ async function handleUpdateClient(req: Request, auth: any) {
   updateData.updated_at = new Date().toISOString()
 
   const { data, error } = await scopeQuery(supabase
-    .from('clients'), auth)
-    .update(updateData)
+    .from('clients')
+    .update(updateData), auth)
     .eq('id', clientId)
     .select()
     .single()

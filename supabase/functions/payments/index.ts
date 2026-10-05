@@ -88,8 +88,8 @@ async function handleListPayments(auth: any) {
   logRequest('payments', 'GET', 'list')
 
   const { data, error } = await scopeQuery(supabase
-    .from('payments'), auth)
-    .select('*')
+    .from('payments')
+    .select('*'), auth)
     .order('payment_date', { ascending: false })
 
   if (error) {
@@ -122,8 +122,8 @@ async function handleRecordPayment(req: Request, auth: any) {
 
   // Fetch the invoice
   const { data: invoice, error: fetchError } = await scopeQuery(supabase
-    .from('invoices'), auth)
-    .select('*')
+    .from('invoices')
+    .select('*'), auth)
     .eq('id', invoiceId)
     .single()
 
@@ -136,8 +136,8 @@ async function handleRecordPayment(req: Request, auth: any) {
 
   // Guard: payment cannot exceed outstanding balance
   const { data: existingPays } = await scopeQuery(supabase
-    .from('payments'), auth)
-    .select('amount_paid')
+    .from('payments')
+    .select('amount_paid'), auth)
     .eq('invoice_id', invoiceId)
   const paidSoFar = (existingPays || []).reduce((s: number, p: any) => s + (Number(p.amount_paid) || 0), 0)
   const balanceBefore = Math.max(0, grandTotal - paidSoFar)

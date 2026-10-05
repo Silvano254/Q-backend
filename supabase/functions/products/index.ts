@@ -64,8 +64,8 @@ async function handleGetProducts(auth: any) {
   logRequest('products', 'GET', 'list')
 
   const { data, error } = await scopeQuery(supabase
-    .from('products'), auth)
-    .select('*')
+    .from('products')
+    .select('*'), auth)
     .order('name', { ascending: true })
 
   if (error) {
@@ -143,8 +143,8 @@ async function handleUpdateProduct(req: Request, auth: any) {
   updateData.updated_at = new Date().toISOString()
 
   const { data, error } = await scopeQuery(supabase
-    .from('products'), auth)
-    .update(updateData)
+    .from('products')
+    .update(updateData), auth)
     .eq('id', productId)
     .select()
     .single()

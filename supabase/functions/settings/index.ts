@@ -86,8 +86,8 @@ async function handleGetSettings(auth: any) {
   logRequest('settings', 'GET', 'fetch')
 
   const { data, error } = await scopeQuery(supabase
-    .from('company_settings'), auth)
-    .select('*')
+    .from('company_settings')
+    .select('*'), auth)
     .limit(1)
     .maybeSingle()
 
@@ -122,16 +122,16 @@ async function handleUpdateSettings(req: Request, auth: any) {
 
   // Single-row semantics: update first row, or insert one if none exists
   const { data: existing } = await scopeQuery(supabase
-    .from('company_settings'), auth)
-    .select('id')
+    .from('company_settings')
+    .select('id'), auth)
     .limit(1)
     .maybeSingle()
 
   let result
   if (existing?.id) {
     result = await scopeQuery(supabase
-      .from('company_settings'), auth)
-      .update({ ...updateData, updated_at: new Date().toISOString() })
+      .from('company_settings')
+      .update({ ...updateData, updated_at: new Date().toISOString() }), auth)
       .eq('id', existing.id)
       .select()
       .single()
