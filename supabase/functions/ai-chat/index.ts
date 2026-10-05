@@ -862,27 +862,9 @@ function extractServerActions(prompt: string, document?: any): any[] {
   }
 
   if (document && hasWriteIntent) {
-    const docName = (document.name || "").toLowerCase();
-    const isImage = (document.mimeType || "").startsWith("image/");
-    const finDoc = document.financialDoc || document.extractedData?.financialDoc;
-
-    if ((isImage || docName.includes("receipt") || docName.includes("expense") || prompt.includes("expense") || prompt.includes("receipt")) && finDoc?.totalAmount && finDoc.totalAmount > 0) {
-      actions.push({
-        id: `act-exp-${Date.now()}`,
-        type: "create_expense",
-        label: `Record Expense: KES ${finDoc.totalAmount.toLocaleString()} (${finDoc.supplierName || 'Supplier'})`,
-        icon: "receipt",
-        isMutation: true,
-        riskLevel: "medium",
-        payload: {
-          category: finDoc.category || "General",
-          description: `${finDoc.category || 'Expense'} - ${finDoc.supplierName || 'Unknown'}`,
-          amount: finDoc.totalAmount,
-          referenceNumber: finDoc.documentNumber || `EXP-${Date.now().toString().slice(-4)}`,
-          date: finDoc.transactionDate || new Date().toISOString().split("T")[0]
-        }
-      });
-    }
+    // NOTE: receipt/expense capture was removed with the expense ledger —
+    // images and receipts are now analyzed only, never converted into an
+    // action proposal (the frontend no longer supports expense actions).
 
     const tables = document.tables || document.extractedData?.tables;
     if (tables && Array.isArray(tables) && tables.length > 0) {
@@ -1138,7 +1120,7 @@ LIVE DATABASE METRICS (verified from Supabase):
 - Quote Conversion Rate: ${live.conversionRate}%
 - Overdue Invoices: ${live.overdueInvoiceCount} (${live.currency} ${live.overdueBalance.toLocaleString()})
 - Product Catalog: ${live.productCount} items
-- Expense Tracking: Stored in the expenses ledger when records are approved and imported
+- Expenses: NOT tracked — Binti has no expense ledger; if asked, say expense tracking is not a feature of this system (receipts/images can be analyzed on request only)
 
 ${recordsBlock}
 RECORD-LEVEL QUESTIONS: When the user asks about a SPECIFIC, LATEST or RECENT invoice, quote, client or payment — or anything covered by TOOL RESULTS above — answer using EXACTLY the LIVE RECORD-LEVEL CONTEXT and TOOL RESULTS data: quote numbers, names, dates and amounts verbatim. TOOL RESULTS are the authoritative, query-fresh answer for that request and take precedence over the general LATEST lists. If a needed record is not present anywhere, state precisely which identifier you need (e.g. an invoice number) and stop. Do NOT ask users to upload documents, and do NOT claim you lack record access when records are listed above.
