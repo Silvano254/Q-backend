@@ -22,6 +22,18 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function mapInvoice(row: any) {
   if (!row) return null
+  const items = Array.isArray(row.items) ? row.items : []
+  const itemTotals = items.reduce((totals: any, item: any) => {
+    const quantity = Number(item?.quantity ?? item?.qty ?? 0) || 0
+    const unitPrice = Number(item?.unitPrice ?? item?.unit_price ?? 0) || 0
+    const discount = Number(item?.discount ?? 0) || 0
+    const tax = Number(item?.tax ?? 0) || 0
+    const base = quantity * unitPrice
+    totals.subtotal += base
+    totals.discountTotal += base * discount / 100
+    totals.taxTotal += (base - base * discount / 100) * tax / 100
+    return totals
+  }, { subtotal: 0, discountTotal: 0, taxTotal: 0 })
   return {
     id: row.id,
     invoiceNumber: row.invoice_number || '',
@@ -31,10 +43,10 @@ function mapInvoice(row: any) {
     clientName: row.client_name || '',
     issueDate: row.created_at ? String(row.created_at).split('T')[0] : undefined,
     dueDate: row.due_date || undefined,
-    items: Array.isArray(row.items) ? row.items : [],
-    subtotal: undefined,
-    discountTotal: undefined,
-    taxTotal: undefined,
+    items,
+    subtotal: Number(row.subtotal ?? itemTotals.subtotal) || 0,
+    discountTotal: Number(row.discountTotal ?? row.discount_total ?? itemTotals.discountTotal) || 0,
+    taxTotal: Number(row.taxTotal ?? row.tax_total ?? itemTotals.taxTotal) || 0,
     grandTotal: Number(row.grand_total || 0),
     status: row.status || 'draft',
     payments: [],
