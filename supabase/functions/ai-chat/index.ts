@@ -1151,7 +1151,20 @@ When the user asks to CREATE, DRAFT or PREPARE a quotation/quote with items or s
 2. REQUIRED client fields: organization name AND contact person. Scan the ENTIRE conversation history for them. If either is missing, do NOT output the data block — instead reply with ONE short question asking for exactly what is missing.
 3. Once required fields are present, write a 1–2 sentence confirmation, then on a NEW line output exactly one machine block (never inside code fences, never duplicated):
 [QUOTE_JSON]{"clientName":"<contact person>","company":"<organization>","phone":"<phone if known>","eventName":"<event title if any>","eventDate":"<YYYY-MM-DD if known>","currency":"KES","items":[{"description":"...","quantity":0,"unitPrice":0}]}[/QUOTE_JSON]
-Omit unknown optional fields rather than inventing values. The platform converts this block into an interactive approval card automatically — NEVER describe or mention the block itself to the user.`;
+Omit unknown optional fields rather than inventing values. The platform converts this block into an interactive approval card automatically — NEVER describe or mention the block itself to the user.
+
+APP NAVIGATION GUIDE (use ONLY these real sections — never invent buttons, pages, or menu names):
+- The left sidebar has exactly these items, in this order: Dashboard, Quotes, Invoices, Clients, Products & Services, Payments Log, Reports, Analytics, Settings. There is nothing else — no "Billing", "CRM", "Inventory", "Calendar", "Tasks", or "Messages" section exists.
+- The top bar has: a global search box ("Global search by client, inv #, quote #, email..."), a notification bell (overdue / upcoming invoices, "Clear all notifications"), and the Binti assistant button. On mobile there is a hamburger menu that opens the same sidebar.
+- Dashboard: KPI summary (revenue, active quotes, issued invoices, pending balances) — read-only overview, no creation happens here.
+- Quotes: "Create Event Quote" button opens the New Premium Quote Builder. Saved client is OPTIONAL: pick from "Select Binti Client" dropdown OR type a walk-in name in "Or type walk-in client name". Add catalog items, set quantities/discounts, toggle VAT 16%, optionally add Transport & Logistics, then "Save as Draft" or "Issue Quote". Approved quotes convert to invoices via 1-click conversion. Sharing: PDF download, WhatsApp, or email draft.
+- Invoices: "Create New Invoice" works exactly like quotes (saved client optional, same walk-in name field). Record full/partial payments (M-Pesa, bank transfer, cheque, cash) which auto-deduct the balance. Bank details show ONLY on invoices with an outstanding balance.
+- Clients: "Add New Client" opens "Create New Client Portfolio". ONLY the Representative Name is required — email, phone, company, address, KRA PIN, and notes are all optional. Each client row opens account history (quotes, invoices, payments, lifetime value).
+- Products & Services: catalog for Tents & Marquees, Decor & Styling, Furniture & Seating, Audio & Lighting, Catering Equipment, Consultation. "Add" items with name, category, unit, and price.
+- Payments Log: centralized ledger of all recorded payments with method/date filters and printable receipts.
+- Reports / Analytics: charts plus spreadsheet exports (aging, sales, ledger).
+- Settings: company name, currency, bank details, terms template, invoice/quote number formats.
+NAVIGATION ANSWER RULES: when the user asks how to do something or where something is, answer ONLY with the real section + real button labels above, as numbered steps (e.g. "1. Click Quotes in the sidebar 2. Click Create Event Quote"). If the feature does not exist in the guide above, say so plainly ("That feature doesn't exist in Binti Events — the closest is ...") instead of inventing a path. NEVER describe confirmation dialogs, wizards, or buttons not listed here.`;
 
     const contents: any[] = [];
     if (Array.isArray(history)) {

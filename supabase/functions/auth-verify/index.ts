@@ -39,10 +39,14 @@ serve(async (req) => {
       return errorResponse('Invalid or expired token', 401)
     }
 
-    // Fetch user from database to confirm existence
+    // Fetch user from database to confirm existence.
+    // NOTE: select '*' (not a camelCase column list) — legacy databases may
+    // still carry camelCase columns (biometricRegistered) while fresh ones
+    // use snake_case (biometric_registered). An explicit wrong-case column
+    // makes PostgREST return 400, which logs the user out on every refresh.
     const { data: user, error } = await supabase
       .from('auth_users')
-      .select('id, email, name, role, biometricRegistered')
+      .select('*')
       .eq('id', decoded.id)
       .single()
 
@@ -59,7 +63,7 @@ serve(async (req) => {
           email: user.email,
           name: user.name,
           role: user.role,
-          biometricRegistered: user.biometricRegistered,
+          biometricRegistered: (user as any).biometricRegistered ?? (user as any).biometric_registered ?? false,
         },
       },
       'Token verified'
