@@ -41,13 +41,17 @@ CREATE TABLE IF NOT EXISTS public.company_settings (
   owner_id TEXT,
     company_name TEXT NOT NULL DEFAULT 'Binti Events',
     tax_number TEXT,
+    email TEXT,
+    phone TEXT,
     address TEXT,
     bank_details TEXT,
     currency TEXT NOT NULL DEFAULT 'KES',
     terms_template TEXT,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
-
+ALTER TABLE public.company_settings
+    ADD COLUMN IF NOT EXISTS email TEXT,
+    ADD COLUMN IF NOT EXISTS phone TEXT;
 CREATE TABLE IF NOT EXISTS public.clients (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_id TEXT,

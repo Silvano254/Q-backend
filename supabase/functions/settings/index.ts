@@ -44,8 +44,8 @@ const DEFAULTS = {
 function mapSettings(row: any) {
   return {
     companyName: row?.company_name || DEFAULTS.companyName,
-    email: DEFAULTS.email,
-    phone: DEFAULTS.phone,
+    email: row?.email || DEFAULTS.email,
+    phone: row?.phone || DEFAULTS.phone,
     address: row?.address || DEFAULTS.address,
     taxNumber: row?.tax_number || DEFAULTS.taxNumber,
     bankDetails: row?.bank_details || DEFAULTS.bankDetails,
@@ -110,6 +110,8 @@ async function handleUpdateSettings(req: Request, auth: any) {
   // Only canonical columns are persisted
   const updateData: Record<string, any> = {}
   if (body.companyName !== undefined) updateData.company_name = sanitizeString(String(body.companyName)).slice(0, 200)
+  if (body.email !== undefined) updateData.email = sanitizeString(String(body.email)).slice(0, 255)
+  if (body.phone !== undefined) updateData.phone = sanitizeString(String(body.phone)).slice(0, 30)
   if (body.taxNumber !== undefined) updateData.tax_number = sanitizeString(String(body.taxNumber)).slice(0, 50)
   if (body.address !== undefined) updateData.address = sanitizeString(String(body.address)).slice(0, 300)
   if (body.bankDetails !== undefined) updateData.bank_details = sanitizeString(String(body.bankDetails)).slice(0, 2000)

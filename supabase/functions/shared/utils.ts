@@ -8,7 +8,7 @@
 export function sanitizeString(input: string): string {
   return input
     .trim()
-    .replace(/[\x00-\x1F\x7F]/g, '') // Remove control characters
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '') // Preserve CR/LF for multiline settings and terms
     .slice(0, 1000) // Enforce max length
 }
 
