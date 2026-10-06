@@ -22,22 +22,22 @@ import {
 const NL = String.fromCharCode(10)
 
 const DEFAULTS = {
-  companyName: 'Binti Events',
-  email: 'billing@bintievents.co.ke',
+  companyName: 'Habanos Lounge',
+  email: 'reservations@habanoslounge.com',
   phone: '+254 712 345678',
   address: 'Nairobi, Kenya',
   taxNumber: 'P051234567A',
-  bankDetails: '',
+  bankDetails: 'Bank: Equity Bank Kenya\nAccount Name: Habanos Lounge Ltd\nAccount Number: 0123456789012\nBranch: Nairobi\nPaybill: 247247 (Acc: 0123456789012)',
   currency: 'KES',
   invoiceFormat: 'INV-{YYYY}-{SEQ}',
   quoteFormat: 'QT-{YYYY}-{SEQ}',
-  termsTemplate: '50% deposit required to confirm booking. Balance due 7 days before event.',
+  termsTemplate: '1. A 50% deposit secures the booking and confirms the agreed schedule.\n2. Final balance is due before service commencement or within the agreed event window.\n3. Any damage, loss, or delayed return of reserved items will be charged at replacement cost.',
   emailTemplate: [
     'Dear {CLIENT_NAME},',
     '',
     'Please find attached {TYPE} {NUMBER}.',
     '',
-    'Thank you.',
+    'Thank you for choosing Habanos Lounge.',
   ].join(NL),
 }
 
