@@ -14,7 +14,7 @@ import {
 
 // Canonical DB columns: id UUID, quote_number UNIQUE, client_id UUID FK
 // (nullable), client_name, grand_total NUMERIC, status, items JSONB,
-// notes, quote_date TIMESTAMPTZ, valid_until TIMESTAMPTZ.
+// notes, terms, quote_date TIMESTAMPTZ, valid_until TIMESTAMPTZ.
 // NOTE: subtotal/discountTotal/taxTotal are NOT canonical columns — they are
 // computed client-side and never persisted.
 
@@ -48,7 +48,7 @@ function mapQuote(row: any) {
     grandTotal: Number(row.grand_total || 0),
     status: row.status || 'draft',
     notes: row.notes || '',
-    terms: '',
+    terms: row.terms || '',
   }
 }
 
@@ -137,6 +137,7 @@ async function handleCreateQuote(req: Request, auth: any) {
     grand_total: Number(body.grandTotal ?? 0) || 0,
     status: ['draft', 'sent', 'converted', 'expired'].includes(body.status) ? body.status : 'draft',
     notes: sanitizeString(String(body.notes ?? '')).slice(0, 2000),
+    terms: sanitizeString(String(body.terms ?? '')).slice(0, 4000),
   }
 
   const { data, error } = await supabase
@@ -172,6 +173,7 @@ async function handleUpdateQuote(req: Request, auth: any) {
   if (body?.items) updateData.items = body.items
   if (body?.grandTotal !== undefined) updateData.grand_total = Number(body.grandTotal) || 0
   if (body?.notes !== undefined) updateData.notes = sanitizeString(String(body.notes)).slice(0, 2000)
+  if (body?.terms !== undefined) updateData.terms = sanitizeString(String(body.terms)).slice(0, 4000)
   updateData.updated_at = new Date().toISOString()
 
   const { data, error } = await scopeQuery(supabase

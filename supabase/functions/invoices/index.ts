@@ -14,7 +14,7 @@ import {
 
 // Canonical DB columns: id UUID, invoice_number UNIQUE, client_id UUID FK
 // (nullable), client_name, grand_total NUMERIC, balance_remaining NUMERIC,
-// status, items JSONB, notes, due_date TIMESTAMPTZ.
+// status, items JSONB, notes, terms, due_date TIMESTAMPTZ.
 // NOTE: issue_date/subtotal/discountTotal/taxTotal are NOT canonical columns.
 // Payment records live in the dedicated `payments` table (see payments fn).
 
@@ -52,7 +52,7 @@ function mapInvoice(row: any) {
     payments: [],
     balanceRemaining: Number(row.balance_remaining ?? row.grand_total ?? 0),
     notes: row.notes || '',
-    terms: '',
+    terms: row.terms || '',
   }
 }
 
@@ -154,6 +154,7 @@ async function handleCreateInvoice(req: Request, auth: any) {
     status,
     items: Array.isArray(body.items) ? body.items : [],
     notes: sanitizeString(String(body.notes ?? '')).slice(0, 2000),
+    terms: sanitizeString(String(body.terms ?? '')).slice(0, 4000),
     due_date: body.dueDate ? new Date(body.dueDate).toISOString() : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
   }
 
@@ -209,6 +210,7 @@ async function handleUpdateInvoice(req: Request, auth: any) {
   }
   if (body?.items) updateData.items = body.items
   if (body?.notes !== undefined) updateData.notes = sanitizeString(String(body.notes)).slice(0, 2000)
+  if (body?.terms !== undefined) updateData.terms = sanitizeString(String(body.terms)).slice(0, 4000)
   if (body?.grandTotal !== undefined) updateData.grand_total = Number(body.grandTotal) || 0
   updateData.updated_at = new Date().toISOString()
 

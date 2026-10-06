@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS public.quotes (
     status TEXT DEFAULT 'draft',
     items JSONB DEFAULT '[]'::jsonb,
     notes TEXT,
+    terms TEXT,
     quote_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     valid_until TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -103,6 +104,7 @@ CREATE TABLE IF NOT EXISTS public.invoices (
     status TEXT DEFAULT 'unpaid',
     items JSONB DEFAULT '[]'::jsonb,
     notes TEXT,
+    terms TEXT,
     due_date TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -216,6 +218,12 @@ BEGIN
 
   -- Optional text columns the API may write
   EXECUTE 'ALTER TABLE public.clients  ADD COLUMN IF NOT EXISTS notes TEXT';
+EXECUTE 'ALTER TABLE public.quotes   ADD COLUMN IF NOT EXISTS notes TEXT';
+EXECUTE 'ALTER TABLE public.invoices ADD COLUMN IF NOT EXISTS notes TEXT';
+-- Custom per-document terms (typed in the quote/invoice builder) must survive
+-- save/reload; company templates remain the fallback when a doc has none.
+EXECUTE 'ALTER TABLE public.quotes   ADD COLUMN IF NOT EXISTS terms TEXT';
+EXECUTE 'ALTER TABLE public.invoices ADD COLUMN IF NOT EXISTS terms TEXT';
   EXECUTE 'ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS reference TEXT';
   EXECUTE 'ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS notes TEXT';
 END $$;
