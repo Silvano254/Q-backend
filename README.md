@@ -2,10 +2,9 @@
 
 Backend services for the Binti Events frontend. The primary production API is implemented as Supabase Edge Functions backed by PostgreSQL. The repository also contains migration utilities and legacy/supporting artifacts; deployment guidance below describes the active Edge Functions setup.
 
-- **Repository:** [Silvano254/Q-backend](https://github.com/Silvano254/Q-backend)
-- **Supabase project ref:** `ltinjyvcrgwcvudrnfby`
-- **Frontend:** [q-frontend-weld.vercel.app](https://q-frontend-weld.vercel.app)
-- **Frontend repository:** [Silvano254/Q-frontend](https://github.com/Silvano254/Q-frontend)
+- **Repository:** See your organization's source control configuration.
+- **Supabase project ref:** Configure your own project reference locally; do not commit project-specific identifiers here.
+- **Frontend:** Configure your application's deployment URL in your own environment.
 
 ## Architecture
 
@@ -58,7 +57,7 @@ The frontend requires `VITE_API_URL` and `VITE_SUPABASE_ANON_KEY`; configure tho
 Set function secrets using the Supabase dashboard or CLI, for example:
 
 ```sh
-npx supabase secrets set JWT_SECRET=<strong-random-secret> GEMINI_API_KEY=<key> RESEND_API_KEY=<key> RESEND_FROM_EMAIL="Binti Events <billing@example.com>" --project-ref ltinjyvcrgwcvudrnfby
+npx supabase secrets set JWT_SECRET=<strong-random-secret> GEMINI_API_KEY=<key> RESEND_API_KEY=<key> RESEND_FROM_EMAIL="Binti Events <billing@example.com>" --project-ref <your-project-ref>
 ```
 
 Do not commit real credentials, `.env` files, anon/service keys, or secrets to source control. Use `.env.example` only as a template; never use its placeholders as deployed secrets.
@@ -84,7 +83,7 @@ Check the Supabase CLI help/version if a subcommand differs between installed CL
 The canonical schema and guarded indexes are in `supabase/schema.sql`. Review schema changes before applying them to a live project. Push linked migrations/schema changes only after confirming the target project and reviewing the diff:
 
 ```sh
-npx supabase link --project-ref ltinjyvcrgwcvudrnfby
+npx supabase link --project-ref <your-project-ref>
 npx supabase db push
 ```
 
@@ -95,7 +94,7 @@ The schema creates unique indexes for quote and invoice numbers when existing da
 Link the project once, then deploy all functions or a selected function:
 
 ```sh
-npx supabase link --project-ref ltinjyvcrgwcvudrnfby
+npx supabase link --project-ref <your-project-ref>
 npx supabase functions deploy
 ```
 
