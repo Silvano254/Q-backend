@@ -18,12 +18,24 @@
 CREATE TABLE IF NOT EXISTS public.auth_users (
     id TEXT PRIMARY KEY,
     email TEXT UNIQUE NOT NULL,
+    phone TEXT,
+    phone_verified_at TIMESTAMP WITH TIME ZONE,
     name TEXT NOT NULL DEFAULT 'Administrator',
     role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'manager')),
     password_hash TEXT NOT NULL,
     password_salt TEXT NOT NULL,
     reset_otp TEXT,
     reset_otp_expiry BIGINT,
+    profile_otp_hash TEXT,
+    profile_otp_expires_at BIGINT,
+    profile_otp_attempts INTEGER NOT NULL DEFAULT 0,
+    profile_otp_channel TEXT,
+    profile_otp_sent_at BIGINT,
+    pending_phone TEXT,
+    phone_otp_hash TEXT,
+    phone_otp_expires_at BIGINT,
+    phone_otp_attempts INTEGER NOT NULL DEFAULT 0,
+    phone_otp_sent_at BIGINT,
     biometric_registered BOOLEAN NOT NULL DEFAULT FALSE,
     biometric_credential_id TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -31,6 +43,22 @@ CREATE TABLE IF NOT EXISTS public.auth_users (
 );
 ALTER TABLE public.auth_users ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.auth_users FROM anon, authenticated;
+ALTER TABLE public.auth_users
+  ADD COLUMN IF NOT EXISTS phone TEXT,
+  ADD COLUMN IF NOT EXISTS phone_verified_at TIMESTAMP WITH TIME ZONE,
+  ADD COLUMN IF NOT EXISTS profile_otp_hash TEXT,
+  ADD COLUMN IF NOT EXISTS profile_otp_expires_at BIGINT,
+  ADD COLUMN IF NOT EXISTS profile_otp_attempts INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS profile_otp_channel TEXT,
+  ADD COLUMN IF NOT EXISTS profile_otp_sent_at BIGINT,
+  ADD COLUMN IF NOT EXISTS pending_phone TEXT,
+  ADD COLUMN IF NOT EXISTS phone_otp_hash TEXT,
+  ADD COLUMN IF NOT EXISTS phone_otp_expires_at BIGINT,
+  ADD COLUMN IF NOT EXISTS phone_otp_attempts INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS phone_otp_sent_at BIGINT;
+CREATE UNIQUE INDEX IF NOT EXISTS auth_users_verified_phone_uidx
+  ON public.auth_users (phone)
+  WHERE phone_verified_at IS NOT NULL AND phone IS NOT NULL;
 
 -- ============================================================
 -- 1-5. Core business tables (created WITHOUT cross-table FKs;

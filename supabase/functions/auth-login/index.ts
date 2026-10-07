@@ -99,6 +99,8 @@ serve(async (req) => {
           email: user.email,
           name: user.name,
           role: user.role,
+          phone: (user as any).phone || null,
+          phoneVerified: Boolean((user as any).phone_verified_at),
         },
         token,
       },

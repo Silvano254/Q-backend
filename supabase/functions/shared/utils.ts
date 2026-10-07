@@ -27,11 +27,32 @@ export function validatePassword(password: string): boolean {
   return Boolean(password) && password.length >= 4 && password.length <= 128
 }
 
+/** Validate E.164 phone numbers for SMS delivery (for example +2547XXXXXXXX). */
+export function validateE164Phone(phone: string): boolean {
+  return /^\+[1-9]\d{7,14}$/.test(phone)
+}
+
 /**
  * Generate 6-digit OTP
  */
 export function generateOTP(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString()
+  const bytes = crypto.getRandomValues(new Uint32Array(1))
+  return (100000 + (bytes[0] % 900000)).toString()
+}
+
+/** Store OTPs as SHA-256 digests so a database read does not reveal live codes. */
+export async function hashOTP(otp: string): Promise<string> {
+  const secret = Deno.env.get('JWT_SECRET') || Deno.env.get('SUPABASE_JWT_SECRET') || ''
+  if (!secret) throw new Error('JWT_SECRET is required to protect one-time verification codes')
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const digest = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(otp))
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
 /**

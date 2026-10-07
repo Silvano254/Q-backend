@@ -33,6 +33,12 @@ Backend services for the Binti Events frontend. The primary production API is im
 
 Functions are invoked at `https://<project-ref>.supabase.co/functions/v1/<function-name>`. Authenticated requests use `Authorization: Bearer <access-token>` and the Supabase anon key in the `apikey` header. The auth endpoints issue and validate the app's session token.
 
+### Credential changes and account phone verification
+
+In Settings, users can request credential-change codes by email or SMS. The request is authenticated and derives the account from the bearer token; clients cannot choose a destination email or SMS recipient. SMS is sent only to the account's verified phone. First-time phone enrollment and phone changes require an OTP sent to the proposed E.164 number. Credential codes expire after 10 minutes, are stored as server-keyed digests, and are limited to five verification attempts with a resend cooldown.
+
+Apply the `supabase/migrations/20261007000100_auth_credential_verification.sql` migration before deploying the updated `auth-profile-update` and `auth-verify` functions. Live SMS requires the three Africa's Talking secrets below; the code uses the production bulk-messaging endpoint and rejects the `sandbox` username. SMS fails closed if live credentials or the registered sender ID are missing. Do not send a credential code to the company profile phone or to an unverified number.
+
 ## Requirements
 
 - Supabase CLI (`npx supabase` can run the repository-pinned CLI)
@@ -53,12 +59,17 @@ The frontend requires `VITE_API_URL` and `VITE_SUPABASE_ANON_KEY`; configure tho
 | `GEMINI_API_KEY` | Gemini-powered AI functions |
 | `RESEND_API_KEY` | Email delivery |
 | `RESEND_FROM_EMAIL` | Sender identity for transactional email |
+| `AFRICASTALKING_USERNAME` | **Live production** Africa's Talking app username (must not be `sandbox`) |
+| `AFRICASTALKING_API_KEY` | Africa's Talking live API key |
+| `AFRICASTALKING_SENDER_ID` | Registered live sender ID/short code |
 
 Set function secrets using the Supabase dashboard or CLI, for example:
 
 ```sh
 npx supabase secrets set JWT_SECRET=<strong-random-secret> GEMINI_API_KEY=<key> RESEND_API_KEY=<key> RESEND_FROM_EMAIL="Binti Events <billing@example.com>" --project-ref <your-project-ref>
 ```
+
+Credential verification SMS uses the live Africa's Talking endpoint. Set all three Africa's Talking secrets above in Supabase before enabling SMS; the endpoint fails closed when secrets are absent, the username is `sandbox`, or the sender ID is missing. Never add live provider credentials to source control.
 
 Do not commit real credentials, `.env` files, anon/service keys, or secrets to source control. Use `.env.example` only as a template; never use its placeholders as deployed secrets.
 
@@ -86,6 +97,8 @@ The canonical schema and guarded indexes are in `supabase/schema.sql`. Review sc
 npx supabase link --project-ref <your-project-ref>
 npx supabase db push
 ```
+
+Before deploying the credential-change update, apply the additive migration `supabase/migrations/20261007000100_auth_credential_verification.sql`. It adds account phone enrollment and separate expiring OTP state; it does not modify existing passwords or sessions.
 
 The schema creates unique indexes for quote and invoice numbers when existing data permits those indexes. If legacy duplicates prevent index creation, resolve those records before relying on the database constraint as a uniqueness guarantee.
 
