@@ -1,64 +1,120 @@
-# Binti Events Corporate Suite — Backend API & Edge Functions
+# Binti Events Management System — Backend
 
-> **Author:** Silvano Otieno  
-> **Repository:** [Silvano254/Q-backend](https://github.com/Silvano254/Q-backend.git)  
-> **Supabase Project:** `ltinjyvcrgwcvudrnfby`  
-> **Frontend App:** [q-frontend-weld.vercel.app](https://q-frontend-weld.vercel.app)
+Backend services for the Binti Events frontend. The primary production API is implemented as Supabase Edge Functions backed by PostgreSQL. The repository also contains migration utilities and legacy/supporting artifacts; deployment guidance below describes the active Edge Functions setup.
 
-The backend architecture for Binti Events Corporate Suite is built on **Supabase PostgreSQL & Edge Functions (Deno / TypeScript)** with an Express REST fallback server. It powers authentication, dynamic data persistence, payment logging with automated balance calculations, email dispatching, and **Binti AI** capabilities via Google Gemini.
+- **Repository:** [Silvano254/Q-backend](https://github.com/Silvano254/Q-backend)
+- **Supabase project ref:** `ltinjyvcrgwcvudrnfby`
+- **Frontend:** [q-frontend-weld.vercel.app](https://q-frontend-weld.vercel.app)
+- **Frontend repository:** [Silvano254/Q-frontend](https://github.com/Silvano254/Q-frontend)
 
----
+## Architecture
 
-## 🛠️ Architecture & Technology Stack
+- Supabase PostgreSQL stores tenant-scoped business records.
+- Supabase Edge Functions run on Deno and expose API endpoints under `/functions/v1/`.
+- Shared function modules provide database access, authentication/authorization, tenant scoping, validation, CORS, and response helpers.
+- The frontend sends authenticated requests to these functions; the service-role key is server-side only.
+- AI endpoints use Google Gemini when configured; email delivery uses Resend when configured.
 
-- **Cloud Platform**: Supabase (PostgreSQL 15+, Supabase Edge Functions)
-- **Runtime**: Deno (Edge Functions) / Node.js 18+ (Express server fallback)
-- **AI Processing**: Google Gemini (Flash & Pro models) via Google AI Studio API
-- **Authentication**: JWT-based secure session tokens with bcrypt password hashing
-- **Deployment**: Supabase Functions CLI (`supabase functions deploy`)
+## Edge Functions
 
----
+| Function | Responsibility |
+| --- | --- |
+| `auth-login`, `auth-verify`, `auth-logout`, `auth-reset` | Login, token validation, logout, and password reset |
+| `auth-biometric-login`, `auth-register-biometric`, `auth-profile-update`, `auth-seed-admin` | Biometric and administrative account flows |
+| `clients` | Client records |
+| `products`, `import-products` | Product catalog and imports |
+| `quotes` | Quote lifecycle and terms |
+| `invoices` | Invoice lifecycle, balances, and terms |
+| `payments` | Invoice payment records and balance updates |
+| `expenses`, `analytics` | Expense and reporting data |
+| `settings` | Company profile and configuration |
+| `email-send` | Email delivery |
+| `ai-chat`, `ai-analyze`, `ai-email-draft` | AI chat, analysis, and email drafting |
+| `limiter` | Rate-limiting support |
 
-## 📡 Edge Function Endpoints
+Functions are invoked at `https://<project-ref>.supabase.co/functions/v1/<function-name>`. Authenticated requests use `Authorization: Bearer <access-token>` and the Supabase anon key in the `apikey` header. The auth endpoints issue and validate the app's session token.
 
-### 1. Authentication & Users (`/auth-login`, `/auth-reset`)
-- `POST /functions/v1/auth-login`: Validates admin credentials against PostgreSQL table `auth_users` with case-insensitive column mapping and bcrypt verification.
-- `POST /functions/v1/auth-reset`: Handles password recovery requests and updates hashed credentials.
+## Requirements
 
-### 2. Quotations & Billing (`/quotes`, `/invoices`, `/payments`)
-- `GET | POST | PUT | DELETE /functions/v1/quotes`: Manages proposal lifecycles, itemized inventory, and optional transport line items.
-- `GET | POST | PUT | DELETE /functions/v1/invoices`: Tax invoice management, due date calculations, and status tracking (*draft*, *pending*, *partially_paid*, *paid*, *overdue*).
-- `GET | POST /functions/v1/payments`: Records partial or full payment transactions, dynamically resolves PostgreSQL column casing, updates remaining balances (`balanceRemaining`), and updates invoice status to `paid` upon full settlement.
+- Supabase CLI (`npx supabase` can run the repository-pinned CLI)
+- Access to the target Supabase project
+- Deno-compatible Supabase Edge Functions runtime
 
-### 3. Master Data & Settings (`/clients`, `/products`, `/settings`)
-- `GET | POST | PUT | DELETE /functions/v1/clients`: Corporate & individual client directory management.
-- `GET | POST | PUT | DELETE /functions/v1/products`: Event equipment catalog and standard pricing.
-- `GET | PUT /functions/v1/settings`: Company profile settings, official bank details, terms templates, and logo assets.
+For normal Edge Function development, the Supabase CLI is the primary tool. The root `package.json` also provides convenience scripts for database push, deploy, and TypeScript checking.
 
-### 4. Binti AI Services (`/ai-assistant`)
-- `POST /functions/v1/ai-assistant`: Contextual business assistant, automated financial summaries, contract term recommendations, and customized email drafts.
+## Configuration and secrets
 
----
+The frontend requires `VITE_API_URL` and `VITE_SUPABASE_ANON_KEY`; configure those in the frontend repository/hosting provider. Configure backend secrets through Supabase project secrets, not frontend environment variables:
 
-## 🚀 Deployment Workflow
+| Secret | Used for |
+| --- | --- |
+| `SUPABASE_URL` | Supabase project URL (normally provided to functions by Supabase) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-side database access; never expose to a browser |
+| `JWT_SECRET` | Signing and validating application session tokens |
+| `GEMINI_API_KEY` | Gemini-powered AI functions |
+| `RESEND_API_KEY` | Email delivery |
+| `RESEND_FROM_EMAIL` | Sender identity for transactional email |
 
-To deploy Edge Functions to Supabase:
-```bash
-# Link your project (if not linked)
-npx supabase link --project-ref ltinjyvcrgwcvudrnfby
+Set function secrets using the Supabase dashboard or CLI, for example:
 
-# Deploy all edge functions without JWT gateway restrictions
-npx supabase functions deploy auth-login --no-verify-jwt
-npx supabase functions deploy payments --no-verify-jwt
-npx supabase functions deploy invoices --no-verify-jwt
-npx supabase functions deploy quotes --no-verify-jwt
-npx supabase functions deploy clients --no-verify-jwt
-npx supabase functions deploy products --no-verify-jwt
-npx supabase functions deploy settings --no-verify-jwt
-npx supabase functions deploy ai-assistant --no-verify-jwt
+```sh
+npx supabase secrets set JWT_SECRET=<strong-random-secret> GEMINI_API_KEY=<key> RESEND_API_KEY=<key> RESEND_FROM_EMAIL="Binti Events <billing@example.com>" --project-ref ltinjyvcrgwcvudrnfby
 ```
 
----
+Do not commit real credentials, `.env` files, anon/service keys, or secrets to source control. Use `.env.example` only as a template; never use its placeholders as deployed secrets.
 
-## 🔒 License & Ownership
+## Local setup and validation
+
+```sh
+npm install
+npm run lint
+```
+
+The `lint` script runs `tsc --noEmit` over the repository's TypeScript configuration. For local function development, use Supabase CLI commands and a local Supabase stack if configured:
+
+```sh
+npx supabase start
+npx supabase functions serve
+```
+
+Check the Supabase CLI help/version if a subcommand differs between installed CLI versions.
+
+## Database
+
+The canonical schema and guarded indexes are in `supabase/schema.sql`. Review schema changes before applying them to a live project. Push linked migrations/schema changes only after confirming the target project and reviewing the diff:
+
+```sh
+npx supabase link --project-ref ltinjyvcrgwcvudrnfby
+npx supabase db push
+```
+
+The schema creates unique indexes for quote and invoice numbers when existing data permits those indexes. If legacy duplicates prevent index creation, resolve those records before relying on the database constraint as a uniqueness guarantee.
+
+## Deploy Edge Functions
+
+Link the project once, then deploy all functions or a selected function:
+
+```sh
+npx supabase link --project-ref ltinjyvcrgwcvudrnfby
+npx supabase functions deploy
+```
+
+Deploy one function when only it changed:
+
+```sh
+npx supabase functions deploy invoices
+npx supabase functions deploy quotes
+```
+
+The project config currently sets `verify_jwt = false` at the Supabase gateway for functions. The application performs its own authentication checks inside the functions; retain those checks and do not interpret this gateway setting as making business endpoints public.
+
+## API reference and operations
+
+- [API quick reference](API_QUICK_REFERENCE.md)
+- [Edge Functions guide](EDGE_FUNCTIONS_GUIDE.md)
+- [Supabase deployment checklist](SUPABASE_DEPLOYMENT_CHECKLIST.md)
+- [Validation guide](VALIDATION_GUIDE.md)
+
+## License
+
 Copyright © 2026 Binti Events. All rights reserved.
