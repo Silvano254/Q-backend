@@ -57,6 +57,9 @@ export interface Quote {
   clientName: string
   quoteDate: string
   expiryDate: string
+  eventName?: string
+  eventDate?: string
+  guestCount?: number
   items: BillingItem[]
   subtotal: number
   discountTotal: number

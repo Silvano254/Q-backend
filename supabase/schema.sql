@@ -121,6 +121,9 @@ CREATE TABLE IF NOT EXISTS public.quotes (
     terms TEXT,
     quote_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     valid_until TIMESTAMP WITH TIME ZONE,
+    event_date TIMESTAMP WITH TIME ZONE,
+    event_name TEXT,
+    guest_count INTEGER,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -255,6 +258,9 @@ EXECUTE 'ALTER TABLE public.invoices ADD COLUMN IF NOT EXISTS notes TEXT';
 -- Custom per-document terms (typed in the quote/invoice builder) must survive
 -- save/reload; company templates remain the fallback when a doc has none.
 EXECUTE 'ALTER TABLE public.quotes   ADD COLUMN IF NOT EXISTS terms TEXT';
+EXECUTE 'ALTER TABLE public.quotes   ADD COLUMN IF NOT EXISTS event_date TIMESTAMP WITH TIME ZONE';
+EXECUTE 'ALTER TABLE public.quotes   ADD COLUMN IF NOT EXISTS event_name TEXT';
+EXECUTE 'ALTER TABLE public.quotes   ADD COLUMN IF NOT EXISTS guest_count INTEGER';
 EXECUTE 'ALTER TABLE public.invoices ADD COLUMN IF NOT EXISTS terms TEXT';
   EXECUTE 'ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS reference TEXT';
   EXECUTE 'ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS notes TEXT';
@@ -418,8 +424,8 @@ BEGIN
 EXCEPTION WHEN others THEN
   RAISE NOTICE 'quotes.quote_number unique index skipped: %', SQLERRM;
 END $$;
--- Add event_date column to quotes table if not exists
-DO $$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'quotes' AND column_name = 'event_date')\n  THEN\n    ALTER TABLE public.quotes ADD COLUMN event_date TIMESTAMP WITH TIME ZONE;\n    RAISE NOTICE 'Added event_date column to quotes table';\n  END IF;\nEND $$;\n\n
+
+
 
 DO $$
 BEGIN

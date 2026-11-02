@@ -14,7 +14,8 @@ import {
 
 // Canonical DB columns: id UUID, quote_number UNIQUE, client_id UUID FK
 // (nullable), client_name, grand_total NUMERIC, status, items JSONB,
-// notes, terms, quote_date TIMESTAMPTZ, valid_until TIMESTAMPTZ, event_date TIMESTAMPTZ.
+// notes, terms, quote_date TIMESTAMPTZ, valid_until TIMESTAMPTZ,
+// event_date TIMESTAMPTZ, event_name TEXT, guest_count INTEGER.
 // NOTE: subtotal/discountTotal/taxTotal are NOT canonical columns — they are
 // computed client-side and never persisted.
 
@@ -40,7 +41,9 @@ function mapQuote(row: any) {
     clientId: row.client_id || '',
     clientName: row.client_name || '',
     quoteDate: row.quote_date || undefined,
-eventDate: row.event_date || undefined,
+    eventDate: row.event_date || undefined,
+    eventName: row.event_name || undefined,
+    guestCount: row.guest_count == null ? undefined : Number(row.guest_count),
     expiryDate: row.valid_until || undefined,
     items,
     subtotal: Number(row.subtotal ?? itemTotals.subtotal) || 0,
@@ -111,6 +114,15 @@ async function handleCreateQuote(req: Request, auth: any) {
     return errorResponse('Client information is required', 400)
   }
 
+  const parsedEventDate = body.eventDate ? new Date(String(body.eventDate)) : null
+  if (parsedEventDate && Number.isNaN(parsedEventDate.getTime())) {
+    return errorResponse('Event date is invalid', 400)
+  }
+  const guestCount = body.guestCount == null || body.guestCount === '' ? null : Number(body.guestCount)
+  if (guestCount !== null && (!Number.isInteger(guestCount) || guestCount < 1)) {
+    return errorResponse('Guest count must be a positive whole number', 400)
+  }
+
   const rawClientId = String(body.clientId ?? body.client_id ?? '')
   // Only persist client_id when it is a real UUID FK; placeholder ids
   // ('client_gen', legacy text ids) must not violate the foreign key.
@@ -131,10 +143,12 @@ async function handleCreateQuote(req: Request, auth: any) {
     client_id: clientId,
     client_name: clientName,
     quote_date: body.quoteDate ? new Date(body.quoteDate).toISOString() : new Date().toISOString(),
-    event_date: body.eventDate ? new Date(body.eventDate).toISOString() : undefined,
     valid_until: body.expiryDate
       ? new Date(body.expiryDate).toISOString()
       : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    event_date: parsedEventDate?.toISOString() ?? null,
+    event_name: body.eventName ? sanitizeString(String(body.eventName)).slice(0, 200) : null,
+    guest_count: guestCount,
     items: Array.isArray(body.items) ? body.items : [],
     grand_total: Number(body.grandTotal ?? 0) || 0,
     status: ['draft', 'sent', 'converted', 'expired'].includes(body.status) ? body.status : 'draft',
@@ -169,6 +183,20 @@ async function handleUpdateQuote(req: Request, auth: any) {
   }
 
   const updateData: any = {}
+  if (body?.eventDate !== undefined) {
+    const parsedEventDate = body.eventDate ? new Date(String(body.eventDate)) : null
+    if (parsedEventDate && Number.isNaN(parsedEventDate.getTime())) {
+      return errorResponse('Event date is invalid', 400)
+    }
+    updateData.event_date = parsedEventDate?.toISOString() ?? null
+  }
+  if (body?.guestCount !== undefined) {
+    const guestCount = body.guestCount == null || body.guestCount === '' ? null : Number(body.guestCount)
+    if (guestCount !== null && (!Number.isInteger(guestCount) || guestCount < 1)) {
+      return errorResponse('Guest count must be a positive whole number', 400)
+    }
+    updateData.guest_count = guestCount
+  }
   if (body?.status && ['draft', 'sent', 'converted', 'expired'].includes(body.status)) {
     updateData.status = body.status
   }
@@ -176,7 +204,7 @@ async function handleUpdateQuote(req: Request, auth: any) {
   if (body?.grandTotal !== undefined) updateData.grand_total = Number(body.grandTotal) || 0
   if (body?.notes !== undefined) updateData.notes = sanitizeString(String(body.notes)).slice(0, 2000)
   if (body?.terms !== undefined) updateData.terms = sanitizeString(String(body.terms)).slice(0, 4000)
-  if (body?.eventDate !== undefined) updateData.event_date = body.eventDate ? new Date(body.eventDate).toISOString() : undefined
+  if (body?.eventName !== undefined) updateData.event_name = body.eventName ? sanitizeString(String(body.eventName)).slice(0, 200) : null
   updateData.updated_at = new Date().toISOString()
 
   const { data, error } = await scopeQuery(supabase
