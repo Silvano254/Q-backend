@@ -418,6 +418,8 @@ BEGIN
 EXCEPTION WHEN others THEN
   RAISE NOTICE 'quotes.quote_number unique index skipped: %', SQLERRM;
 END $$;
+-- Add event_date column to quotes table if not exists
+DO $$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'quotes' AND column_name = 'event_date')\n  THEN\n    ALTER TABLE public.quotes ADD COLUMN event_date TIMESTAMP WITH TIME ZONE;\n    RAISE NOTICE 'Added event_date column to quotes table';\n  END IF;\nEND $$;\n\n
 
 DO $$
 BEGIN
