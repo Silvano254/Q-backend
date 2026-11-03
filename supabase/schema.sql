@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS public.invoices (
     items JSONB DEFAULT '[]'::jsonb,
     notes TEXT,
     terms TEXT,
+    issue_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     due_date TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()

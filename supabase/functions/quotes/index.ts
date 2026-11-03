@@ -183,6 +183,34 @@ async function handleUpdateQuote(req: Request, auth: any) {
   }
 
   const updateData: any = {}
+  if (body?.clientId !== undefined || body?.clientName !== undefined) {
+    const clientName = sanitizeString(String(body.clientName ?? '')).slice(0, 200)
+    if (!clientName) return errorResponse('Client information is required', 400)
+    const rawClientId = String(body.clientId ?? '')
+    const clientId = UUID_RE.test(rawClientId) ? rawClientId : null
+    if (clientId) {
+      const { data: client, error: clientError } = await scopeQuery(
+        supabase.from('clients').select('id').eq('id', clientId), auth,
+      ).maybeSingle()
+      if (clientError || !client) return errorResponse('Client was not found in your account', 400)
+    }
+    updateData.client_id = clientId
+    updateData.client_name = clientName
+  }
+  if (body?.quoteDate !== undefined) {
+    const parsedQuoteDate = body.quoteDate ? new Date(String(body.quoteDate)) : null
+    if (parsedQuoteDate && Number.isNaN(parsedQuoteDate.getTime())) {
+      return errorResponse('Quote date is invalid', 400)
+    }
+    updateData.quote_date = parsedQuoteDate?.toISOString() ?? null
+  }
+  if (body?.expiryDate !== undefined) {
+    const parsedExpiryDate = body.expiryDate ? new Date(String(body.expiryDate)) : null
+    if (parsedExpiryDate && Number.isNaN(parsedExpiryDate.getTime())) {
+      return errorResponse('Expiry date is invalid', 400)
+    }
+    updateData.valid_until = parsedExpiryDate?.toISOString() ?? null
+  }
   if (body?.eventDate !== undefined) {
     const parsedEventDate = body.eventDate ? new Date(String(body.eventDate)) : null
     if (parsedEventDate && Number.isNaN(parsedEventDate.getTime())) {
@@ -200,8 +228,15 @@ async function handleUpdateQuote(req: Request, auth: any) {
   if (body?.status && ['draft', 'sent', 'converted', 'expired'].includes(body.status)) {
     updateData.status = body.status
   }
-  if (body?.items) updateData.items = body.items
-  if (body?.grandTotal !== undefined) updateData.grand_total = Number(body.grandTotal) || 0
+  if (body?.items !== undefined) {
+    if (!Array.isArray(body.items)) return errorResponse('Quote items must be a list', 400)
+    updateData.items = body.items
+  }
+  if (body?.grandTotal !== undefined) {
+    const grandTotal = Number(body.grandTotal)
+    if (!Number.isFinite(grandTotal) || grandTotal < 0) return errorResponse('Quote total must be a non-negative number', 400)
+    updateData.grand_total = grandTotal
+  }
   if (body?.notes !== undefined) updateData.notes = sanitizeString(String(body.notes)).slice(0, 2000)
   if (body?.terms !== undefined) updateData.terms = sanitizeString(String(body.terms)).slice(0, 4000)
   if (body?.eventName !== undefined) updateData.event_name = body.eventName ? sanitizeString(String(body.eventName)).slice(0, 200) : null

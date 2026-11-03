@@ -15,7 +15,7 @@ import {
 // Canonical DB columns: id UUID, invoice_number UNIQUE, client_id UUID FK
 // (nullable), client_name, grand_total NUMERIC, balance_remaining NUMERIC,
 // status, items JSONB, notes, terms, due_date TIMESTAMPTZ.
-// NOTE: issue_date/subtotal/discountTotal/taxTotal are NOT canonical columns.
+// NOTE: subtotal/discountTotal/taxTotal are not canonical columns.
 // Payment records live in the dedicated `payments` table (see payments fn).
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -41,7 +41,7 @@ function mapInvoice(row: any) {
     quoteNumber: undefined,
     clientId: row.client_id || '',
     clientName: row.client_name || '',
-    issueDate: row.created_at ? String(row.created_at).split('T')[0] : undefined,
+    issueDate: row.issue_date || (row.created_at ? String(row.created_at).split('T')[0] : undefined),
     dueDate: row.due_date || undefined,
     items,
     subtotal: Number(row.subtotal ?? itemTotals.subtotal) || 0,
@@ -128,6 +128,10 @@ async function handleCreateInvoice(req: Request, auth: any) {
   }
 
   const grandTotal = Number(body.grandTotal ?? body.grand_total ?? 0) || 0
+  const parsedIssueDate = body.issueDate ? new Date(String(body.issueDate)) : new Date()
+  if (Number.isNaN(parsedIssueDate.getTime())) return errorResponse('Issue date is invalid', 400)
+  const parsedDueDate = body.dueDate ? new Date(String(body.dueDate)) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+  if (Number.isNaN(parsedDueDate.getTime())) return errorResponse('Due date is invalid', 400)
   const incomingPayments = Array.isArray(body.payments) ? body.payments : []
   const totalPaid = incomingPayments.reduce((s: number, p: any) => s + (Number(p?.amountPaid) || 0), 0)
   const balanceRemaining = Math.max(0, grandTotal - totalPaid)
@@ -149,13 +153,14 @@ async function handleCreateInvoice(req: Request, auth: any) {
     invoice_number: sanitizeString(String(body.invoiceNumber ?? '')).slice(0, 50) || `INV-${Date.now()}`,
     client_id: clientId,
     client_name: clientName,
+    issue_date: parsedIssueDate.toISOString(),
     grand_total: grandTotal,
     balance_remaining: balanceRemaining,
     status,
     items: Array.isArray(body.items) ? body.items : [],
     notes: sanitizeString(String(body.notes ?? '')).slice(0, 2000),
     terms: sanitizeString(String(body.terms ?? '')).slice(0, 4000),
-    due_date: body.dueDate ? new Date(body.dueDate).toISOString() : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    due_date: parsedDueDate.toISOString(),
   }
 
   const { data, error } = await supabase
@@ -205,13 +210,43 @@ async function handleUpdateInvoice(req: Request, auth: any) {
   }
 
   const updateData: any = {}
-  if (body?.status && ['draft', 'pending', 'partially_paid', 'paid', 'overdue', 'cancelled'].includes(body.status)) {
-    updateData.status = body.status
+  const allowedStatuses = ['draft', 'pending', 'partially_paid', 'paid', 'overdue', 'cancelled']
+  const requestedStatus = allowedStatuses.includes(body?.status) ? body.status : undefined
+  if (body?.clientId !== undefined || body?.clientName !== undefined) {
+    const clientName = sanitizeString(String(body.clientName ?? '')).slice(0, 200)
+    if (!clientName) return errorResponse('Client information is required', 400)
+    const rawClientId = String(body.clientId ?? '')
+    const clientId = UUID_RE.test(rawClientId) ? rawClientId : null
+    if (clientId) {
+      const { data: client, error: clientError } = await scopeQuery(
+        supabase.from('clients').select('id').eq('id', clientId), auth,
+      ).maybeSingle()
+      if (clientError || !client) return errorResponse('Client was not found in your account', 400)
+    }
+    updateData.client_id = clientId
+    updateData.client_name = clientName
   }
-  if (body?.items) updateData.items = body.items
+  if (body?.issueDate !== undefined) {
+    const parsedIssueDate = body.issueDate ? new Date(String(body.issueDate)) : null
+    if (parsedIssueDate && Number.isNaN(parsedIssueDate.getTime())) return errorResponse('Issue date is invalid', 400)
+    updateData.issue_date = parsedIssueDate?.toISOString() ?? null
+  }
+  if (body?.dueDate !== undefined) {
+    const parsedDueDate = body.dueDate ? new Date(String(body.dueDate)) : null
+    if (parsedDueDate && Number.isNaN(parsedDueDate.getTime())) return errorResponse('Due date is invalid', 400)
+    updateData.due_date = parsedDueDate?.toISOString() ?? null
+  }
+  if (body?.items !== undefined) {
+    if (!Array.isArray(body.items)) return errorResponse('Invoice items must be a list', 400)
+    updateData.items = body.items
+  }
   if (body?.notes !== undefined) updateData.notes = sanitizeString(String(body.notes)).slice(0, 2000)
   if (body?.terms !== undefined) updateData.terms = sanitizeString(String(body.terms)).slice(0, 4000)
-  if (body?.grandTotal !== undefined) updateData.grand_total = Number(body.grandTotal) || 0
+  if (body?.grandTotal !== undefined) {
+    const grandTotal = Number(body.grandTotal)
+    if (!Number.isFinite(grandTotal) || grandTotal < 0) return errorResponse('Invoice total must be a non-negative number', 400)
+    updateData.grand_total = grandTotal
+  }
   updateData.updated_at = new Date().toISOString()
 
   // Recompute balance from the authoritative payments table
@@ -231,12 +266,12 @@ async function handleUpdateInvoice(req: Request, auth: any) {
   }
   updateData.balance_remaining = Math.max(0, Number(updateData.grand_total) - paidSum)
 
-  if (!body?.status && updateData.status === undefined) {
-    if (updateData.balance_remaining <= 0 && Number(updateData.grand_total) > 0 && paidSum > 0) {
-      updateData.status = 'paid'
-    } else if (paidSum > 0) {
-      updateData.status = 'partially_paid'
-    }
+  if (paidSum > 0) {
+    updateData.status = updateData.balance_remaining <= 0 && Number(updateData.grand_total) > 0
+      ? 'paid'
+      : 'partially_paid'
+  } else if (requestedStatus) {
+    updateData.status = requestedStatus
   }
 
   const { data, error } = await scopeQuery(supabase
