@@ -50,6 +50,8 @@ function mapQuote(row: any) {
     discountTotal: Number(row.discountTotal ?? row.discount_total ?? itemTotals.discountTotal) || 0,
     taxTotal: Number(row.taxTotal ?? row.tax_total ?? itemTotals.taxTotal) || 0,
     grandTotal: Number(row.grand_total || 0),
+    depositRequired: Boolean(row.deposit_required),
+    depositAmount: Number(row.deposit_amount || 0),
     status: row.status || 'draft',
     notes: row.notes || '',
     terms: row.terms || '',
@@ -136,6 +138,13 @@ async function handleCreateQuote(req: Request, auth: any) {
     if (clientError || !client) return errorResponse('Client was not found in your account', 400)
   }
 
+  const grandTotal = Number(body.grandTotal ?? 0) || 0
+  const depositRequired = Boolean(body.depositRequired)
+  const depositAmount = Number(body.depositAmount ?? 0)
+  if (!Number.isFinite(depositAmount) || depositAmount < 0 || (depositRequired && (depositAmount <= 0 || depositAmount > grandTotal))) {
+    return errorResponse('Deposit must be greater than zero and no more than the quote total', 400)
+  }
+
   // No explicit id — let gen_random_uuid() generate the UUID primary key.
   const quoteData: Record<string, any> = {
     owner_id: auth.id,
@@ -150,7 +159,9 @@ async function handleCreateQuote(req: Request, auth: any) {
     event_name: body.eventName ? sanitizeString(String(body.eventName)).slice(0, 200) : null,
     guest_count: guestCount,
     items: Array.isArray(body.items) ? body.items : [],
-    grand_total: Number(body.grandTotal ?? 0) || 0,
+    grand_total: grandTotal,
+    deposit_required: depositRequired,
+    deposit_amount: depositRequired ? depositAmount : 0,
     status: ['draft', 'sent', 'converted', 'expired'].includes(body.status) ? body.status : 'draft',
     notes: sanitizeString(String(body.notes ?? '')).slice(0, 2000),
     terms: sanitizeString(String(body.terms ?? '')).slice(0, 4000),
@@ -236,6 +247,12 @@ async function handleUpdateQuote(req: Request, auth: any) {
     const grandTotal = Number(body.grandTotal)
     if (!Number.isFinite(grandTotal) || grandTotal < 0) return errorResponse('Quote total must be a non-negative number', 400)
     updateData.grand_total = grandTotal
+  }
+  if (body?.depositRequired !== undefined) updateData.deposit_required = Boolean(body.depositRequired)
+  if (body?.depositAmount !== undefined) {
+    const depositAmount = Number(body.depositAmount)
+    if (!Number.isFinite(depositAmount) || depositAmount < 0) return errorResponse('Deposit amount must be a non-negative number', 400)
+    updateData.deposit_amount = depositAmount
   }
   if (body?.notes !== undefined) updateData.notes = sanitizeString(String(body.notes)).slice(0, 2000)
   if (body?.terms !== undefined) updateData.terms = sanitizeString(String(body.terms)).slice(0, 4000)

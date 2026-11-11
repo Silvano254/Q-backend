@@ -65,6 +65,8 @@ export interface Quote {
   discountTotal: number
   taxTotal: number
   grandTotal: number
+  depositRequired?: boolean
+  depositAmount?: number
   status: 'draft' | 'sent' | 'converted' | 'expired'
   notes: string
   terms: string
@@ -93,6 +95,8 @@ export interface Invoice {
   discountTotal: number
   taxTotal: number
   grandTotal: number
+  depositRequired?: boolean
+  depositAmount?: number
   status: 'draft' | 'pending' | 'partially_paid' | 'paid' | 'overdue' | 'cancelled'
   payments: PaymentRecord[]
   balanceRemaining: number

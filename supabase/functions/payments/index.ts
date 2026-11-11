@@ -63,6 +63,8 @@ function mapInvoice(row: any) {
     discountTotal: Number(row.discountTotal ?? row.discount_total ?? itemTotals.discountTotal) || 0,
     taxTotal: Number(row.taxTotal ?? row.tax_total ?? itemTotals.taxTotal) || 0,
     grandTotal: Number(row.grand_total || 0),
+    depositRequired: Boolean(row.deposit_required),
+    depositAmount: Number(row.deposit_amount || 0),
     status: row.status || 'draft',
     payments: [],
     balanceRemaining: Number(row.balance_remaining ?? row.grand_total ?? 0),

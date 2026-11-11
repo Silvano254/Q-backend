@@ -48,6 +48,8 @@ function mapInvoice(row: any) {
     discountTotal: Number(row.discountTotal ?? row.discount_total ?? itemTotals.discountTotal) || 0,
     taxTotal: Number(row.taxTotal ?? row.tax_total ?? itemTotals.taxTotal) || 0,
     grandTotal: Number(row.grand_total || 0),
+    depositRequired: Boolean(row.deposit_required),
+    depositAmount: Number(row.deposit_amount || 0),
     status: row.status || 'draft',
     payments: [],
     balanceRemaining: Number(row.balance_remaining ?? row.grand_total ?? 0),
@@ -128,6 +130,11 @@ async function handleCreateInvoice(req: Request, auth: any) {
   }
 
   const grandTotal = Number(body.grandTotal ?? body.grand_total ?? 0) || 0
+  const depositRequired = Boolean(body.depositRequired)
+  const depositAmount = Number(body.depositAmount ?? 0)
+  if (!Number.isFinite(depositAmount) || depositAmount < 0 || (depositRequired && (depositAmount <= 0 || depositAmount > grandTotal))) {
+    return errorResponse('Deposit must be greater than zero and no more than the invoice total', 400)
+  }
   const parsedIssueDate = body.issueDate ? new Date(String(body.issueDate)) : new Date()
   if (Number.isNaN(parsedIssueDate.getTime())) return errorResponse('Issue date is invalid', 400)
   const parsedDueDate = body.dueDate ? new Date(String(body.dueDate)) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
@@ -155,6 +162,8 @@ async function handleCreateInvoice(req: Request, auth: any) {
     client_name: clientName,
     issue_date: parsedIssueDate.toISOString(),
     grand_total: grandTotal,
+    deposit_required: depositRequired,
+    deposit_amount: depositRequired ? depositAmount : 0,
     balance_remaining: balanceRemaining,
     status,
     items: Array.isArray(body.items) ? body.items : [],
@@ -246,6 +255,12 @@ async function handleUpdateInvoice(req: Request, auth: any) {
     const grandTotal = Number(body.grandTotal)
     if (!Number.isFinite(grandTotal) || grandTotal < 0) return errorResponse('Invoice total must be a non-negative number', 400)
     updateData.grand_total = grandTotal
+  }
+  if (body?.depositRequired !== undefined) updateData.deposit_required = Boolean(body.depositRequired)
+  if (body?.depositAmount !== undefined) {
+    const depositAmount = Number(body.depositAmount)
+    if (!Number.isFinite(depositAmount) || depositAmount < 0) return errorResponse('Deposit amount must be a non-negative number', 400)
+    updateData.deposit_amount = depositAmount
   }
   updateData.updated_at = new Date().toISOString()
 
