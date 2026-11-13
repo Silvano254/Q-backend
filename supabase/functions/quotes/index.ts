@@ -23,6 +23,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function mapQuote(row: any) {
   if (!row) return null
+  const expiryDate = row.valid_until ? String(row.valid_until).split('T')[0] : undefined
+  const currentDate = new Date().toISOString().slice(0, 10)
+  const persistedStatus = row.status || 'draft'
+  const status = persistedStatus !== 'converted' && expiryDate && expiryDate < currentDate
+    ? 'expired'
+    : persistedStatus
   const items = Array.isArray(row.items) ? row.items : []
   const itemTotals = items.reduce((totals: any, item: any) => {
     const quantity = Number(item?.quantity ?? item?.qty ?? 0) || 0
@@ -44,7 +50,7 @@ function mapQuote(row: any) {
     eventDate: row.event_date || undefined,
     eventName: row.event_name || undefined,
     guestCount: row.guest_count == null ? undefined : Number(row.guest_count),
-    expiryDate: row.valid_until ? String(row.valid_until).split('T')[0] : undefined,
+    expiryDate,
     items,
     subtotal: Number(row.subtotal ?? itemTotals.subtotal) || 0,
     discountTotal: Number(row.discountTotal ?? row.discount_total ?? itemTotals.discountTotal) || 0,
@@ -52,7 +58,7 @@ function mapQuote(row: any) {
     grandTotal: Number(row.grand_total || 0),
     depositRequired: Boolean(row.deposit_required),
     depositAmount: Number(row.deposit_amount || 0),
-    status: row.status || 'draft',
+    status,
     notes: row.notes || '',
     terms: row.terms || '',
   }
@@ -89,6 +95,18 @@ serve(async (req) => {
 
 async function handleGetQuotes(auth: any) {
   logRequest('quotes', 'GET', 'list')
+
+  const today = new Date()
+  today.setUTCHours(0, 0, 0, 0)
+  const { error: expiryUpdateError } = await scopeQuery(supabase
+    .from('quotes')
+    .update({ status: 'expired', updated_at: new Date().toISOString() }), auth)
+    .lt('valid_until', today.toISOString())
+    .not('status', 'in', '(converted,expired)')
+
+  if (expiryUpdateError) {
+    logError('quotes-expiry-update', expiryUpdateError)
+  }
 
   const { data, error } = await scopeQuery(supabase
     .from('quotes')
