@@ -3,6 +3,14 @@ UPDATE public.quotes
 SET valid_until = COALESCE(quote_date, created_at, NOW()) + INTERVAL '14 days'
 WHERE valid_until IS NULL;
 
+-- Preserve the legacy statuses while allowing the new expired state.
+ALTER TABLE public.quotes
+  DROP CONSTRAINT IF EXISTS quote_status_valid;
+
+ALTER TABLE public.quotes
+  ADD CONSTRAINT quote_status_valid
+  CHECK (status IN ('draft', 'sent', 'accepted', 'rejected', 'converted', 'expired'));
+
 -- Mark every already-expired, unconverted quote, including older records.
 UPDATE public.quotes
 SET status = 'expired',
