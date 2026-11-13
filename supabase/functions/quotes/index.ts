@@ -40,11 +40,11 @@ function mapQuote(row: any) {
     quoteNumber: row.quote_number || '',
     clientId: row.client_id || '',
     clientName: row.client_name || '',
-    quoteDate: row.quote_date || undefined,
+    quoteDate: row.quote_date ? String(row.quote_date).split('T')[0] : undefined,
     eventDate: row.event_date || undefined,
     eventName: row.event_name || undefined,
     guestCount: row.guest_count == null ? undefined : Number(row.guest_count),
-    expiryDate: row.valid_until || undefined,
+    expiryDate: row.valid_until ? String(row.valid_until).split('T')[0] : undefined,
     items,
     subtotal: Number(row.subtotal ?? itemTotals.subtotal) || 0,
     discountTotal: Number(row.discountTotal ?? row.discount_total ?? itemTotals.discountTotal) || 0,
@@ -145,16 +145,18 @@ async function handleCreateQuote(req: Request, auth: any) {
     return errorResponse('Deposit must be greater than zero and no more than the quote total', 400)
   }
 
+  const createdAt = new Date()
+  const expiresAt = new Date(createdAt)
+  expiresAt.setDate(expiresAt.getDate() + 14)
+
   // No explicit id — let gen_random_uuid() generate the UUID primary key.
   const quoteData: Record<string, any> = {
     owner_id: auth.id,
     quote_number: sanitizeString(String(body.quoteNumber ?? '')).slice(0, 50) || `QT-${Date.now()}`,
     client_id: clientId,
     client_name: clientName,
-    quote_date: body.quoteDate ? new Date(body.quoteDate).toISOString() : new Date().toISOString(),
-    valid_until: body.expiryDate
-      ? new Date(body.expiryDate).toISOString()
-      : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    quote_date: createdAt.toISOString(),
+    valid_until: expiresAt.toISOString(),
     event_date: parsedEventDate?.toISOString() ?? null,
     event_name: body.eventName ? sanitizeString(String(body.eventName)).slice(0, 200) : null,
     guest_count: guestCount,
@@ -194,6 +196,10 @@ async function handleUpdateQuote(req: Request, auth: any) {
   }
 
   const updateData: any = {}
+  const isQuoteEdit = [
+    'clientId', 'clientName', 'quoteDate', 'expiryDate', 'eventDate', 'eventName',
+    'guestCount', 'items', 'grandTotal', 'depositRequired', 'depositAmount', 'notes', 'terms',
+  ].some((field) => body?.[field] !== undefined)
   if (body?.clientId !== undefined || body?.clientName !== undefined) {
     const clientName = sanitizeString(String(body.clientName ?? '')).slice(0, 200)
     if (!clientName) return errorResponse('Client information is required', 400)
@@ -257,7 +263,16 @@ async function handleUpdateQuote(req: Request, auth: any) {
   if (body?.notes !== undefined) updateData.notes = sanitizeString(String(body.notes)).slice(0, 2000)
   if (body?.terms !== undefined) updateData.terms = sanitizeString(String(body.terms)).slice(0, 4000)
   if (body?.eventName !== undefined) updateData.event_name = body.eventName ? sanitizeString(String(body.eventName)).slice(0, 200) : null
-  updateData.updated_at = new Date().toISOString()
+  if (isQuoteEdit) {
+    const editedAt = new Date()
+    const expiresAt = new Date(editedAt)
+    expiresAt.setDate(expiresAt.getDate() + 14)
+    updateData.quote_date = editedAt.toISOString()
+    updateData.valid_until = expiresAt.toISOString()
+    updateData.updated_at = editedAt.toISOString()
+  } else {
+    updateData.updated_at = new Date().toISOString()
+  }
 
   const { data, error } = await scopeQuery(supabase
     .from('quotes')
